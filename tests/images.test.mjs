@@ -182,3 +182,24 @@ test("finished downloads with no type or an SVG type are deleted, not kept as im
   assert.equal(web.downloads.find((d) => d.url.includes("k-3")).removed, undefined);
   assert.match(results(agent)[0], /Saved 1 .*2 weren't image files and were removed/);
 });
+
+test("downloads still running at the deadline are cancelled unless they already report a raster image type", async () => {
+  const downloads = [];
+  const ctx = load(AGENT_FILES, {
+    browser: {
+      runtime: { getManifest: () => ({}) },
+      downloads: {
+        download: async (o) => downloads.push({ ...o, id: downloads.length + 1, state: "in_progress", mime: o.url.includes("svg") ? "image/svg+xml" : o.url.includes("slow") ? "" : "image/jpeg" }),
+        search: async ({ id }) => downloads.filter((d) => d.id === id).map((d) => ({ ...d })),
+        cancel: async (id) => void (downloads[id - 1].cancelled = true),
+        removeFile: async () => {},
+        erase: async () => [],
+      },
+    },
+  });
+  const saver = new (ctx.$("ImageSaver"))({ folder: "PageMortem/x" });
+  for (const u of ["https://a.example/slow", "https://a.example/pic.svg", "https://a.example/big.jpg"]) await saver.save(u);
+  const r = await saver.settle(50);
+  assert.deepEqual({ ...r }, { saved: 0, failed: 0, notImage: 2, pending: 1 });
+  assert.deepEqual(downloads.map((d) => !!d.cancelled), [true, true, false]);
+});
