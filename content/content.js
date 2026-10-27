@@ -36,7 +36,7 @@
   const isVisible = (el) =>
     el.checkVisibility ? el.checkVisibility({ visibilityProperty: true }) : el.getClientRects().length > 0;
 
-  const SENSITIVE_RE = /(passw|card.?(num|no)|cc-?(num|csc|exp)|cvv|cvc|csc|security.?code|expir|iban|routing|account.?num|ssn|social.?sec|\bpin\b|otp|one.?time)/i;
+  const SENSITIVE_RE = /(passw|card.?(num|no)|cc.?(num|csc|exp)|cvv|cvc|csc|security.?code|expir|iban|routing|account.?num|ssn|social.?sec|\bpin\b|otp|one.?time|api\s*key|access\s*token|\bsecret\b|recovery\s*code)/i;
   function isSensitive(el) {
     if (!el || !el.tagName) return false;
     const type = (el.getAttribute("type") || "").toLowerCase();
@@ -44,7 +44,9 @@
     if (type === "password" || ac.includes("password") || ac.startsWith("cc-") || ac.includes(" cc-") || ac === "one-time-code") return true;
     const hay = [el.name, el.id, el.getAttribute("aria-label"), el.getAttribute("placeholder"), el.labels?.[0]?.innerText]
       .filter(Boolean)
-      .join(" ");
+      .join(" ")
+      .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+      .replace(/[_-]+/g, " ");
     return SENSITIVE_RE.test(hay);
   }
 
@@ -534,7 +536,7 @@
   async function typeText({ id, text, submit = false, doc }) {
     checkDoc(doc);
     const el = getEl(id);
-    if (isSensitive(el)) throw new Error("Refused: this is a password/payment/ID field. Ask the user to fill it in.");
+    if (isSensitive(el)) throw new Error("Refused: this is a password/payment/ID or credential field. Ask the user to fill it in.");
     actionable(el, id);
     if (el.readOnly) throw new Error(`[${id}] is read-only.`);
     if (kindOf(el) !== "input") throw new Error(`[${id}] is not a text field.`);
@@ -631,7 +633,7 @@
   async function pressKey({ id, key, doc }) {
     checkDoc(doc);
     const el = getEl(id);
-    if (isSensitive(el)) throw new Error("Refused: this is a password/payment/ID field.");
+    if (isSensitive(el)) throw new Error("Refused: this is a password/payment/ID or credential field.");
     actionable(el, id);
     const k = KEY_INFO[key];
     if (!k) throw new Error(`Unsupported key "${key}".`);

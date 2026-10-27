@@ -11,6 +11,58 @@ const hangingFetch = (url, { signal }) =>
 const plain = (v) => JSON.parse(JSON.stringify(v));
 const lib = (extra = {}) => load([...AGENT_FILES, "lib/chat.js"], { browser, ...extra });
 
+test("an already-stopped page call performs no browser work", async () => {
+  const events = [];
+  const ctx = load(["lib/tabs.js"], {
+    browser: {
+      tabs: { sendMessage: async () => events.push("message") },
+      scripting: { executeScript: async () => events.push("inject") },
+    },
+  });
+  const ctrl = new AbortController();
+  const reason = new Error("Stopped");
+  ctrl.abort(reason);
+  await assert.rejects(ctx.pageCall(1, "click", { id: 1 }, { signal: ctrl.signal }), (e) => e === reason);
+  await new Promise(setImmediate);
+  assert.deepEqual(events, []);
+});
+
+test("Stop during ping or injection prevents late action dispatch, including failed browser calls", async () => {
+  for (const phase of ["ping-ready", "ping-missing", "ping-failed", "inject", "inject-failed"]) {
+    const events = [];
+    let release, fail, started;
+    const gate = new Promise((resolve, reject) => { release = resolve; fail = reject; });
+    const entered = new Promise((resolve) => { started = resolve; });
+    const ctx = load(["lib/tabs.js"], {
+      browser: {
+        tabs: {
+          sendMessage: async (id, message) => {
+            events.push(message.op);
+            if (message.op !== "ping") return { ok: true };
+            if (phase.startsWith("ping")) {
+              started();
+              return gate;
+            }
+            return { ok: false };
+          },
+        },
+        scripting: { executeScript: () => { events.push("inject"); started(); return gate; } },
+      },
+    });
+    const ctrl = new AbortController();
+    const reason = new Error("Stopped");
+    const pending = ctx.pageCall(1, "click", { id: 1 }, { signal: ctrl.signal });
+    const stopped = assert.rejects(pending, (e) => e === reason);
+    await entered;
+    ctrl.abort(reason);
+    await stopped;
+    if (phase.endsWith("failed")) fail(new Error("Browser call failed"));
+    else release({ ok: phase === "ping-ready" });
+    await new Promise(setImmediate);
+    assert.deepEqual(events, phase.startsWith("ping") ? ["ping"] : ["ping", "inject"], phase);
+  }
+});
+
 // ---------- URLs and sites ----------
 test("only http(s) URLs count as web pages", () => {
   const { isWebUrl } = lib();

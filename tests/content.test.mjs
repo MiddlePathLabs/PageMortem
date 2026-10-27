@@ -8,6 +8,9 @@ const LISTED = new Set(["BUTTON", "INPUT", "SELECT", "TEXTAREA"]); // elements w
 class El {
   constructor(tag, attrs = {}, kids = []) {
     Object.assign(this, { nodeType: 1, tagName: tag.toUpperCase(), attrs, childNodes: [], parentElement: null, isConnected: true });
+    this.name = attrs.name || "";
+    this.id = attrs.id || "";
+    this.value = attrs.value || "";
     for (const k of kids) this.append(k);
   }
   append(k) {
@@ -70,6 +73,7 @@ function page(body) {
     return r;
   };
   return {
+    send,
     async describe(label) {
       const { text, doc } = await send("readPage", {});
       const id = Number(new RegExp(`\\[(\\d+) \\w+ "${label}"`).exec(text)[1]);
@@ -109,4 +113,37 @@ test("controls without a form owner (role=button) still count their enclosing fo
   const info = await p.describe("Next");
   assert.equal(info.inForm, true);
   assert.equal(clickRisk(info).level, "approve");
+});
+
+test("credential fields omit values and refuse typing and key presses across label and identifier spellings", async () => {
+  const names = ["API Key", "Access Token", "Secret", "Client Secret", "Recovery Code", "Password", "Card Number", "cc num", "PIN"];
+  const spellings = (name) => [name, name.toLowerCase().replaceAll(" ", "-"), name.toLowerCase().replaceAll(" ", "_"),
+    name.split(" ").map((word, index) => index === 0 ? word.toLowerCase() : word[0].toUpperCase() + word.slice(1)).join("")];
+  for (const name of new Set(names.flatMap(spellings))) {
+    for (const source of ["aria-label", "placeholder", "name", "id", "label"]) {
+      const input = new El("input", source === "label" ? {} : { [source]: name });
+      if (source === "label") input.labels = [{ innerText: name }];
+      input.value = "synthetic-credential";
+      const p = page(new El("body", {}, [input]));
+      const { text, doc } = await p.send("readPage", {});
+      const id = Number(/\[(\d+) input/.exec(text)[1]);
+      assert.match(text, /sensitive, not editable/, `${source}: ${name}`);
+      assert.doesNotMatch(text, /synthetic-credential/);
+      assert.equal((await p.send("describe", { id, doc })).sensitive, true);
+      await assert.rejects(p.send("type", { id, doc, text: "replacement" }), /Refused/);
+      await assert.rejects(p.send("pressKey", { id, doc, key: "Enter" }), /Refused/);
+      assert.equal(input.value, "synthetic-credential");
+    }
+  }
+});
+
+test("ordinary fields are still readable and not classified as credentials", async () => {
+  for (const label of ["Search", "Secretary", "Recovery email", "API endpoint", "Access level", "Key binding"]) {
+    const input = new El("input", { "aria-label": label, value: "ordinary-value" });
+    const p = page(new El("body", {}, [input]));
+    const { text, doc } = await p.send("readPage", {});
+    const id = Number(/\[(\d+) input/.exec(text)[1]);
+    assert.match(text, /value="ordinary-value"/, label);
+    assert.equal((await p.send("describe", { id, doc })).sensitive, false, label);
+  }
 });

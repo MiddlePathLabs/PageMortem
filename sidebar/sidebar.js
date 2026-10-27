@@ -447,7 +447,7 @@ async function runAgent(task) {
     bot.citations(agent.citations);
     bot.set(answer);
   } catch (e) {
-    if (isAbort(e)) bot.set("_Stopped._");
+    if (isAbort(e)) bot.set("_Stopped. Actions already sent to the page may still complete; Stop does not undo them._");
     else bot.error(e);
   } finally {
     bot.finish();
