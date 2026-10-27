@@ -5,6 +5,13 @@
   if (window.__lanternReady) return;
   window.__lanternReady = true;
 
+  // Identifies this document. The agent passes it back with every action so an id read from one
+  // page can never act on another page that happens to reuse the same number.
+  const DOC = [...crypto.getRandomValues(new Uint32Array(2))].map((n) => n.toString(36)).join("");
+  const checkDoc = (doc) => {
+    if (doc && doc !== DOC) throw new Error("The page changed since it was read. Read the page again to get fresh numbers.");
+  };
+
   // ---------- element registry (ids are stable for the lifetime of the page) ----------
   let nextId = 1;
   const idOf = new WeakMap();
@@ -323,7 +330,7 @@
       };
     });
     await nextPaint();
-    return { images: list, dpr: devicePixelRatio, viewport: { w: innerWidth, h: innerHeight } };
+    return { images: list, dpr: devicePixelRatio, viewport: { w: innerWidth, h: innerHeight }, doc: DOC };
   }
 
   // ---------- actions ----------
@@ -342,7 +349,18 @@
       formMethod: (form?.getAttribute("method") || "get").toLowerCase(),
       isSubmit: el.tagName === "BUTTON" ? type === "submit" || (!type && !!form) : type === "submit" || type === "image",
       sensitive: isSensitive(el),
+      visible: isVisible(el),
+      disabled: !!el.disabled || el.getAttribute("aria-disabled") === "true",
+      readOnly: !!el.readOnly,
+      searchField: type === "search" || el.getAttribute("role") === "searchbox" || !!el.closest("[role=search]"),
+      doc: DOC,
     };
+  }
+
+  /** Refuse to act on elements a user couldn't act on either. */
+  function actionable(el, id) {
+    if (!isVisible(el)) throw new Error(`[${id}] is hidden. Read the page again.`);
+    if (el.disabled || el.getAttribute("aria-disabled") === "true") throw new Error(`[${id}] is disabled.`);
   }
 
   function flash(el, color = "#22C55E") {
@@ -351,8 +369,10 @@
     setTimeout(() => b.remove(), 900);
   }
 
-  async function click({ id }) {
+  async function click({ id, doc }) {
+    checkDoc(doc);
     const el = getEl(id);
+    actionable(el, id);
     el.scrollIntoView({ block: "center", inline: "nearest" });
     await nextPaint();
     flash(el);
@@ -365,9 +385,13 @@
     return { ok: true };
   }
 
-  async function typeText({ id, text, submit = false }) {
+  async function typeText({ id, text, submit = false, doc }) {
+    checkDoc(doc);
     const el = getEl(id);
     if (isSensitive(el)) throw new Error("Refused: this is a password/payment/ID field. Ask the user to fill it in.");
+    actionable(el, id);
+    if (el.readOnly) throw new Error(`[${id}] is read-only.`);
+    if (kindOf(el) !== "input") throw new Error(`[${id}] is not a text field.`);
     el.scrollIntoView({ block: "center" });
     el.focus();
     if (el.isContentEditable) {
@@ -388,8 +412,10 @@
     return { ok: true };
   }
 
-  function selectOption({ id, value }) {
+  function selectOption({ id, value, doc }) {
+    checkDoc(doc);
     const el = getEl(id);
+    actionable(el, id);
     if (el.tagName !== "SELECT") throw new Error(`[${id}] is not a dropdown; click it instead.`);
     const want = clean(String(value)).toLowerCase();
     const opt =
@@ -412,7 +438,8 @@
     return { y: Math.round(scrollY), height: document.documentElement.scrollHeight, atBottom };
   }
 
-  async function highlight({ id, keep = 8000 }) {
+  async function highlight({ id, keep = 8000, doc }) {
+    checkDoc(doc);
     const el = getEl(id);
     el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
     await nextPaint();
@@ -421,7 +448,8 @@
     return { ok: true };
   }
 
-  async function rectOf({ id }) {
+  async function rectOf({ id, doc }) {
+    checkDoc(doc);
     const el = getEl(id);
     if (visibleFraction(el.getBoundingClientRect()) < 0.9) {
       el.scrollIntoView({ block: "center", inline: "center" });
@@ -487,7 +515,7 @@
     readPage: ({ maxChars = 12000, part = 1 }) => {
       const parts = splitParts(serialize(), maxChars);
       const p = Math.min(Math.max(1, part | 0), parts.length);
-      return { ...pageMeta(), part: p, parts: parts.length, text: parts[p - 1] };
+      return { ...pageMeta(), part: p, parts: parts.length, text: parts[p - 1], doc: DOC };
     },
     getText: ({ maxChars = 300_000 }) => {
       const text = (readableRoot().innerText || "")
@@ -498,7 +526,7 @@
         .trim();
       return { ...pageMeta(), selection: String(getSelection() || "").trim(), text: text.slice(0, maxChars), length: text.length };
     },
-    describe: ({ id }) => describe(getEl(id)),
+    describe: ({ id, doc }) => (checkDoc(doc), describe(getEl(id))),
     click,
     type: typeText,
     select: selectOption,

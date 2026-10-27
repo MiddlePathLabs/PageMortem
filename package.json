@@ -1,0 +1,9 @@
+{
+  "name": "lantern",
+  "private": true,
+  "description": "Dev scripts only; the extension itself has no dependencies.",
+  "scripts": {
+    "test": "node --test tests/",
+    "test:live": "node --test --test-timeout=300000 tests/live.test.mjs"
+  }
+}

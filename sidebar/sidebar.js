@@ -18,6 +18,8 @@ const state = {
   chat: new Chat(),
   translated: new Set(), // tab ids translated in place
   confirms: new Set(), // resolvers of open approval prompts
+  keepPages: false, // Ask: keep earlier pages in the conversation when the page changes
+  sessionGrants: new Set(), // agent "Always allow" choices, kept until a new conversation
 };
 
 // ---------- log rendering ----------
@@ -80,10 +82,15 @@ function addBot({ agent = false } = {}) {
   log.append(wrap);
   scrollDown(true);
 
-  // renderMarkdown escapes all model text before adding its own tags; parse it inertly and move the nodes in.
-  const show = (md) => body.replaceChildren(...new DOMParser().parseFromString(renderMarkdown(md), "text/html").body.childNodes);
+  // Model text is escaped, parsed inertly and allowlist-filtered. Links work only to pages the answer came from.
+  let links = new Set();
+  const show = (md) => body.replaceChildren(...markdownNodes(md, { links }));
   let frame = 0, pendingText = "";
   const api = {
+    /** Origins the answer may link to (a live Set is fine: the agent adds pages as it reads them). */
+    links(origins) {
+      links = origins;
+    },
     stream(text) {
       pendingText = text;
       if (frame) return;
@@ -102,6 +109,15 @@ function addBot({ agent = false } = {}) {
     },
     note(text) {
       extra.append(el("div", "dimline", text));
+    },
+    /** Speed and token counts for the whole run, under the reply. */
+    stats(meter) {
+      const s = state.settings.showStats && meter.summary();
+      if (!s) return;
+      wrap.querySelector(":scope > .stats")?.remove();
+      const line = el("div", "stats", s.text);
+      if (s.title) line.title = s.title;
+      wrap.append(line);
     },
     step(icon, text, { dim = false } = {}) {
       thinking.textContent = "Working";
@@ -137,7 +153,11 @@ function addBot({ agent = false } = {}) {
       list.append(li);
       scrollDown();
     },
-    confirm({ title, detail }) {
+    /**
+     * allowAll: label of a scoped "allow all for this task" button; remember: label of an "always allow for this
+     * session" button. Either is null when the action must be approved on its own.
+     */
+    confirm({ title, detail, allowAll = null, remember = null }) {
       return new Promise((resolve) => {
         const card = el("div", "confirm");
         card.append(el("div", "title", title), el("div", "detail", detail || ""));
@@ -153,7 +173,10 @@ function addBot({ agent = false } = {}) {
           b.addEventListener("click", () => finish(ans, after));
           return b;
         };
-        row.append(mk("Allow", "yes", "primary", "Allowed"), mk("Allow all for this task", "all", "", "Allowed for the rest of this task"), mk("Deny", "no", "", "Denied"));
+        row.append(mk("Allow", "yes", "primary", "Allowed"));
+        if (allowAll) row.append(mk(allowAll, "all", "", `${allowAll}: allowed for the rest of this task`));
+        if (remember) row.append(mk(remember, "session", "", `${remember}: allowed until you start a new conversation`));
+        row.append(mk("Deny", "no", "", "Denied"));
         card.append(row);
         (list ? list.parentElement : extra).after(card);
         state.confirms.add(finish);
@@ -233,19 +256,25 @@ async function runAsk(question) {
   const tabs = await contextTabs(state.windowId);
   const bot = addBot();
   const ctrl = new AbortController();
+  const meter = new Meter();
   setRunning({ stop: () => ctrl.abort() });
   try {
     const pages = await readPages(tabs);
     for (const p of pages) if (p.error) bot.note(`Couldn't read “${p.title || p.url}”: ${p.error}`);
+    bot.links(new Set(pages.map((p) => originOf(p.url))));
     const selection = pages.find((p) => p.tab.active)?.selection || "";
     if (selection) bot.note(`Including your selected text (${selection.length} chars).`);
-    const answer = await state.chat.ask({
-      question, pages, selection, llm: state.llm, settings: state.settings, onDelta: (t) => bot.stream(t), signal: ctrl.signal,
+    const { answer, fresh } = await state.chat.ask({
+      question, pages, selection, llm: metered(state.llm, meter), settings: state.settings, keepPages: state.keepPages,
+      onDelta: (t) => bot.stream(t), signal: ctrl.signal,
     });
+    if (fresh) bot.note("Different page, so this started a fresh conversation. Turn on “Keep earlier pages” to compare with pages you asked about before.");
     bot.set(answer);
   } catch (e) {
     if (isAbort(e)) bot.note("Stopped.");
     else bot.error(e);
+  } finally {
+    bot.stats(meter);
   }
 }
 
@@ -254,12 +283,15 @@ async function runAgent(task) {
   const active = await activeTab();
   const selection = await pageCall(active.id, "selection").then((r) => r.text).catch(() => "");
   const bot = addBot({ agent: true });
+  const meter = new Meter();
   const agent = new Agent({
     settings: state.settings,
-    llm: state.llm,
+    llm: metered(state.llm, meter),
     windowId: state.windowId,
+    sessionGrants: state.sessionGrants,
     ui: { step: (i, t, o) => bot.step(i, t, o), confirm: (o) => bot.confirm(o), image: (u) => bot.image(u) },
   });
+  bot.links(agent.sources);
   setRunning({ stop: () => agent.stop() });
   try {
     const answer = await agent.run(task, { tabId: active.id, otherTabs: tabs.filter((t) => t.id !== active.id), selection });
@@ -269,12 +301,14 @@ async function runAgent(task) {
     else bot.error(e);
   } finally {
     bot.finish();
+    bot.stats(meter);
   }
 }
 
 async function runSummarize() {
   const tab = await activeTab();
   const ctrl = new AbortController();
+  const meter = new Meter();
   setRunning({ stop: () => ctrl.abort() });
   const [page] = await readPages([tab]);
   const useSel = page.selection && page.selection.length > 40;
@@ -283,8 +317,9 @@ async function runSummarize() {
   try {
     if (page.error) throw new Error(page.error);
     const p = useSel ? { ...page, text: page.selection } : page;
+    bot.links(new Set([originOf(page.url)]));
     const answer = await summarize({
-      page: p, llm: state.llm, settings: state.settings, signal: ctrl.signal,
+      page: p, llm: metered(state.llm, meter), settings: state.settings, signal: ctrl.signal,
       onDelta: (t) => bot.stream(t),
       onProgress: (i, n) => bot.progress(i - 1, n, `Reading part ${i} of ${n}`),
     });
@@ -292,6 +327,8 @@ async function runSummarize() {
   } catch (e) {
     if (isAbort(e)) bot.note("Stopped.");
     else bot.error(e);
+  } finally {
+    bot.stats(meter);
   }
 }
 
@@ -299,6 +336,8 @@ async function runTranslate(presetSelection) {
   const lang = $("lang").value;
   const tab = await activeTab();
   const ctrl = new AbortController();
+  const meter = new Meter();
+  const llm = metered(state.llm, meter);
   setRunning({ stop: () => ctrl.abort() });
   const selection = presetSelection || (await pageCall(tab.id, "selection").then((r) => r.text).catch(() => ""));
 
@@ -306,10 +345,12 @@ async function runTranslate(presetSelection) {
     addUser(`Translate selection into ${lang}`);
     const bot = addBot();
     try {
-      bot.set(await translateText({ text: selection, lang, llm: state.llm, onDelta: (t) => bot.stream(t), signal: ctrl.signal }));
+      bot.set(await translateText({ text: selection, lang, llm, onDelta: (t) => bot.stream(t), signal: ctrl.signal }));
     } catch (e) {
       if (isAbort(e)) bot.note("Stopped.");
       else bot.error(e);
+    } finally {
+      bot.stats(meter);
     }
     return;
   }
@@ -318,7 +359,7 @@ async function runTranslate(presetSelection) {
   const bot = addBot();
   try {
     const r = await translatePage({
-      tabId: tab.id, lang, llm: state.llm, settings: state.settings, signal: ctrl.signal,
+      tabId: tab.id, lang, llm, settings: state.settings, signal: ctrl.signal,
       onProgress: (d, n) => bot.progress(d, n, `Translating ${d} of ${n} text pieces`),
     });
     state.translated.add(tab.id);
@@ -328,6 +369,8 @@ async function runTranslate(presetSelection) {
   } catch (e) {
     if (isAbort(e)) bot.note("Stopped.");
     else bot.error(e);
+  } finally {
+    bot.stats(meter);
   }
 }
 
@@ -356,6 +399,7 @@ function setMode(mode) {
   state.mode = mode;
   for (const b of document.querySelectorAll(".modes button")) b.setAttribute("aria-checked", String(b.dataset.mode === mode));
   $("input").placeholder = mode === "agent" ? "Describe a task, e.g. “summarize the last 3 releases”" : "Ask about this page…";
+  $("keepWrap").hidden = mode !== "ask";
   browser.storage.local.set({ mode }).catch(() => {});
 }
 
@@ -456,8 +500,14 @@ async function init() {
   langSel.value = state.settings.language;
   langSel.addEventListener("change", () => saveSettings({ language: langSel.value }));
 
-  const { mode } = await browser.storage.local.get("mode");
+  const { mode, askKeepPages } = await browser.storage.local.get(["mode", "askKeepPages"]);
   setMode(mode === "agent" ? "agent" : "ask");
+  state.keepPages = !!askKeepPages;
+  $("keepPages").checked = state.keepPages;
+  $("keepPages").addEventListener("change", (e) => {
+    state.keepPages = e.target.checked;
+    browser.storage.local.set({ askKeepPages: state.keepPages }).catch(() => {});
+  });
   showWelcome();
   refreshContext();
 
@@ -481,6 +531,7 @@ async function init() {
   $("restore").addEventListener("click", runRestore);
   $("newChat").addEventListener("click", () => {
     state.chat.reset();
+    state.sessionGrants.clear();
     showWelcome();
   });
   $("openSettings").addEventListener("click", () => browser.runtime.openOptionsPage());

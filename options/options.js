@@ -3,7 +3,7 @@
 const $ = (id) => document.getElementById(id);
 const TEXT = ["endpoint", "apiKey", "model", "visionModel", "language", "toolMode"];
 const NUM = ["temperature", "maxTokens", "maxPageChars", "maxSteps", "screenshotWidth", "translateConcurrency"];
-const BOOL = ["disableThinking", "stayOnSite", "confirmAll", "closeAgentTabs"];
+const BOOL = ["disableThinking", "showStats", "stayOnSite", "confirmAll", "closeAgentTabs"];
 
 function read() {
   const s = {};
