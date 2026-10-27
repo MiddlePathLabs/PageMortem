@@ -497,14 +497,16 @@ function addBot({ agent = false, replay = false } = {}) {
       scrollDown();
     },
     image(url) {
-      const li = el("li");
       const img = el("img", "shot");
       img.src = url;
       img.alt = "Screenshot the model looked at";
       img.title = "Click to enlarge";
       img.addEventListener("click", () => img.classList.toggle("big"));
-      li.append(el("span", "ic", ""), img);
-      list.append(li);
+      if (list) {
+        const li = el("li");
+        li.append(el("span", "ic", ""), img);
+        list.append(li);
+      } else extra.append(img); // Ask answers have no step list
       scrollDown();
     },
     /**
@@ -770,10 +772,41 @@ async function runAsk(question) {
     bot.links(new Set(pages.map((p) => originOf(p.url))));
     const selection = pages.map((p) => p.selection || "").filter(Boolean).join("\n\n");
     if (selection) bot.note(`Including selected text (${Math.min(selection.length, 6000)} chars).`);
-    const { answer, fresh } = await state.chat.ask({
-      question, pages, selection, llm: metered(state.llm, meter), settings: state.settings, keepPages: false,
+    const llm = metered(state.llm, meter);
+    let image = null;
+    let asked = question;
+    if (isImageQuestion(question)) {
+      const active = await activeTab();
+      const tab = pages.find((p) => p.tab?.id === active?.id)?.tab || pages[0].tab;
+      try {
+        const shot = await pageShot(tab.id, { maxWidth: state.settings.screenshotWidth, signal: ctrl.signal });
+        bot.image(shot.url);
+        bot.note(shot.cropped ? "Showing the model the main image on the page." : "Showing the model a screenshot of the page.");
+        const { visionModel, model } = state.settings;
+        if (visionModel && visionModel !== model) {
+          const seen = await describeImage({ image: shot.url, question, llm, settings: state.settings, signal: ctrl.signal });
+          asked = `${question}\n\n<screenshot_description>\n${seen}\n</screenshot_description>\n(What the vision model sees in a screenshot from the page.)`;
+        } else image = shot.url;
+      } catch (e) {
+        if (isAbort(e)) throw e;
+        bot.note(`Couldn't look at the page: ${e.message}`);
+      }
+    }
+    const ask = (img) => state.chat.ask({
+      question: asked, pages, selection, image: img, llm, settings: state.settings, keepPages: false,
       onDelta: (t) => bot.stream(t), signal: ctrl.signal,
     });
+    let reply;
+    try {
+      reply = await ask(image);
+    } catch (e) {
+      if (!image || isAbort(e)) throw e;
+      // Text-only models (or a server without the vision projector loaded) reject the image outright.
+      bot.note(`The model didn't accept the image (${e.message}). Set a vision model in options; answering from the page text.`);
+      bot.stream("");
+      reply = await ask(null);
+    }
+    const { answer, fresh } = reply;
     if (fresh) bot.note("Included pages changed, so this answer starts a fresh model conversation.");
     bot.evidence(state.chat.citations);
     bot.set(answer);

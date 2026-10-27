@@ -292,6 +292,30 @@ test("Ask wraps pages as data and keeps the conversation", async () => {
   assert.equal(u2.content, "q2", "same pages aren't resent");
 });
 
+test("Ask spots questions about images", () => {
+  const ctx = lib();
+  for (const q of ["caption this image", "create a text to image caption of the image", "What does the photo show?", "what does it look like"])
+    assert.ok(ctx.$("isImageQuestion")(q), q);
+  for (const q of ["Summarize the last three releases", "What's the price?", "Is this article biased?"])
+    assert.ok(!ctx.$("isImageQuestion")(q), q);
+});
+
+test("Ask sends the latest screenshot with the question and keeps it out of saved threads", async () => {
+  const ctx = lib();
+  const chat = new (ctx.$("Chat"))();
+  const model = scriptedModel([{ content: "A1" }, { content: "A2" }]);
+  const pages = [{ url: "https://a.example/", title: "T", text: "body text" }];
+  await chat.ask({ question: "caption this image", pages, selection: "", image: "data:image/jpeg;base64,AAA", llm: model, settings: SETTINGS });
+  const [, u1] = plain(model.calls[0].messages);
+  assert.equal(u1.content[1].image_url.url, "data:image/jpeg;base64,AAA");
+  assert.match(u1.content[0].text, /body text[\s\S]*caption this image[\s\S]*screenshot from the page is attached/);
+  await chat.ask({ question: "shorter", pages, selection: "", llm: model, settings: SETTINGS });
+  const [, f1, , f2] = plain(model.calls[1].messages);
+  assert.equal(f1.content[1].type, "image_url", "a follow-up still sees the image");
+  assert.equal(f2.content, "shorter");
+  assert.ok(plain(chat.snapshot()).history.every((m) => !("image" in m)));
+});
+
 test("Summarize splits long pages into parts and combines them", async () => {
   const ctx = lib();
   const model = scriptedModel([{ content: "p1" }, { content: "p2" }, { content: "p3" }, { content: "final" }]);
