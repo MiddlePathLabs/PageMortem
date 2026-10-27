@@ -142,6 +142,16 @@ export class Web {
     switch (op) {
       case "readPage":
         return { ...base, part: 1, parts: 1, text: d.spec.text || "" };
+      case "find": {
+        // Lines of the page text that contain the query; the element is the first [N …] on the line.
+        const q = args.query.toLowerCase();
+        const lines = (d.spec.text || "").split("\n").filter((l) => l.toLowerCase().includes(q));
+        const matches = lines.slice(0, 10).map((l) => {
+          const id = /\[(\d+) (\w+)/.exec(l);
+          return { part: 1, id: id ? Number(id[1]) : null, kind: id ? id[2] : "text", text: l };
+        });
+        return { ...base, matches, total: lines.length, parts: 1 };
+      }
       case "meta":
         return { ...base, scroll: { y: 0, height: 1000, viewport: 800 } };
       case "describe":

@@ -100,15 +100,21 @@
     "BLOCKQUOTE", "FORM", "FIELDSET", "DL", "DT", "DD", "FIGURE", "FIGCAPTION", "DETAILS", "HR", "ADDRESS",
   ]);
   const HARD_CAP = 400_000;
-  const MAX_ELEMENTS = 500;
 
-  function serialize() {
+  /**
+   * The page as text chunks, each with the element it came from (null for layout such as newlines and list
+   * markers), so a position in the text can be traced back to the page. Every interactive element gets an id: the
+   * text is paged by readPage, so a long page costs more parts, never unaddressable controls.
+   */
+  function pageChunks() {
     const out = [];
+    const srcs = [];
+    const tokens = new Set(); // indexes of the [N kind "label"] chunks
     let len = 0;
-    let elements = 0;
-    const push = (s) => {
+    const push = (s, src = null) => {
       if (len < HARD_CAP) {
         out.push(s);
+        srcs.push(src);
         len += s.length;
       }
     };
@@ -140,14 +146,15 @@
         if (el.getAttribute("aria-selected") === "true") s += " selected";
       }
       if (el.disabled || el.getAttribute("aria-disabled") === "true") s += " disabled";
-      push(" " + s + "] ");
+      tokens.add(out.length);
+      push(" " + s + "] ", el);
     }
 
     function walk(node, depth) {
       if (len >= HARD_CAP || depth > 60) return;
       if (node.nodeType === Node.TEXT_NODE) {
         const t = node.nodeValue.replace(/\s+/g, " ");
-        if (t.trim()) push(t);
+        if (t.trim()) push(t, node.parentElement);
         return;
       }
       if (node.nodeType !== Node.ELEMENT_NODE) return;
@@ -156,9 +163,8 @@
       if (SKIP.has(tag) || el.getAttribute("aria-hidden") === "true" || el.hasAttribute("data-lantern-ui")) return;
       if (!isVisible(el)) return;
 
-      const kind = elements < MAX_ELEMENTS ? kindOf(el) : null;
+      const kind = kindOf(el);
       if (kind) {
-        elements++;
         element(el);
         // Links that wrap whole cards: keep their inner text too so prices/specs aren't lost.
         const inner = kind === "link" ? clean(el.innerText) : "";
@@ -167,11 +173,11 @@
 
       if (tag === "IMG") {
         const alt = clean(el.alt);
-        if (alt.length > 1 && el.width >= 48 && el.height >= 48) push(` [${getId(el)} image "${clip(alt, 80)}"] `);
+        if (alt.length > 1 && el.width >= 48 && el.height >= 48) push(` [${getId(el)} image "${clip(alt, 80)}"] `, el);
         return;
       }
       if (tag === "BR") return push("\n");
-      if (tag === "PRE") return push("\n```\n" + clip(el.innerText, 3000) + "\n```\n");
+      if (tag === "PRE") return push("\n```\n" + clip(el.innerText, 3000) + "\n```\n", el);
 
       const h = /^H([1-6])$/.exec(tag);
       if (h) push("\n\n" + "#".repeat(Number(h[1])) + " ");
@@ -188,13 +194,11 @@
     }
 
     walk(document.body, 0);
-    return out
-      .join("")
-      .replace(/[ \t]+/g, " ")
-      .replace(/ *\n */g, "\n")
-      .replace(/\n{3,}/g, "\n\n")
-      .trim();
+    return { out, srcs, tokens };
   }
+
+  const tidy = (s) => s.replace(/[ \t]+/g, " ").replace(/ *\n */g, "\n").replace(/\n{3,}/g, "\n\n");
+  const serialize = () => tidy(pageChunks().out.join("")).trim();
 
   function splitParts(text, maxChars) {
     const parts = [];
@@ -207,6 +211,75 @@
     }
     parts.push(rest);
     return parts;
+  }
+
+  /** Index of the last entry in the ascending list `starts` that is <= pos. */
+  function lastAtOrBefore(starts, pos) {
+    let lo = 0;
+    let hi = starts.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (starts[mid] <= pos) lo = mid;
+      else hi = mid - 1;
+    }
+    return lo;
+  }
+
+  const offsets = (list) => {
+    let n = 0;
+    return list.map((s) => ((n += s.length), n - s.length));
+  };
+
+  /**
+   * Case-insensitive search over exactly the text readPage returns, so it sees nothing read_page wouldn't (no
+   * sensitive field values, nothing hidden). Each match reports its readPage part, the text around it and the
+   * element it sits in, which gets an id so it can be highlighted.
+   */
+  function findText({ query = "", maxChars = 12000, max = 10 }) {
+    const words = clean(String(query)).split(" ").filter(Boolean);
+    if (!words.length) throw new Error("Give some text to search for.");
+    const re = new RegExp(words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+"), "gi");
+    const { out, srcs, tokens } = pageChunks();
+    const raw = out.join("");
+    const chunkStarts = offsets(out);
+    const tidied = tidy(raw);
+    const text = tidied.trim();
+    const lead = tidied.length - tidied.trimStart().length;
+    const parts = splitParts(text, maxChars);
+    const partStarts = offsets(parts); // splitParts only cuts, so the parts add up to the text
+
+    const matches = [];
+    let total = 0;
+    for (const m of raw.matchAll(re)) {
+      const first = lastAtOrBefore(chunkStarts, m.index);
+      // In an element token, only the label and link count; "[12 button" is Lantern's notation, not page text.
+      if (tokens.has(first)) {
+        const quote = out[first].indexOf('"');
+        if (quote === -1 || m.index - chunkStarts[first] < quote) continue;
+      }
+      total++;
+      if (matches.length >= max) continue;
+      const last = lastAtOrBefore(chunkStarts, m.index + m[0].length - 1);
+      let el = null;
+      let end = null;
+      for (let i = first; i <= last; i++) if (srcs[i]) (el ||= srcs[i]), (end = srcs[i]);
+      while (el && end && !el.contains(end)) el = el.parentElement;
+
+      const at = Math.max(0, tidy(raw.slice(0, m.index)).length - lead);
+      // A second hit in the same element and snippet adds nothing; it still counts in the total.
+      const prev = matches.at(-1);
+      if (prev && el && prev.id === idOf.get(el) && at - prev.at < 120) continue;
+      const from = Math.max(0, at - 120);
+      const to = Math.min(text.length, at + m[0].length + 120);
+      matches.push({
+        at,
+        part: lastAtOrBefore(partStarts, at) + 1,
+        id: el ? getId(el) : null,
+        kind: el ? kindOf(el) || (el.tagName === "IMG" ? "image" : "text") : "text",
+        text: (from > 0 ? "…" : "") + clean(text.slice(from, to)) + (to < text.length ? "…" : ""),
+      });
+    }
+    return { ...pageMeta(), matches: matches.map(({ at, ...m }) => m), total, parts: parts.length, doc: DOC };
   }
 
   function pageMeta() {
@@ -507,14 +580,73 @@
     return { y: Math.round(scrollY), height: document.documentElement.scrollHeight, atBottom };
   }
 
-  async function highlight({ id, keep = 8000, doc }) {
+  /**
+   * A table cell's whole row (so "RAM" is outlined together with "16 GB"), unless the row is page layout rather than
+   * data: a presentation table, or a row taller than half the screen.
+   */
+  function rowOf(el) {
+    const tr = el.closest("td, th")?.parentElement;
+    if (tr?.tagName !== "TR" || tr.closest("table").getAttribute("role") === "presentation") return el;
+    return tr.getBoundingClientRect().height <= innerHeight / 2 ? tr : el;
+  }
+
+  // Outlines on screen (their removers). The user can dismiss them all with Esc or a click on the page. Only real
+  // input counts: the agent's own clicks are synthetic, and clicks on a scrollbar are scrolling, not dismissing.
+  const highlights = new Set();
+  function dismissHighlights(e) {
+    if (!e.isTrusted || (e.type === "keydown" && e.key !== "Escape")) return;
+    if (e.type === "pointerdown" && onScrollbar(e)) return;
+    for (const done of [...highlights]) done();
+  }
+  // Scrollbars sit just outside an element's client area. The page's own are measured in the viewport, because on
+  // <html> offsetY counts from the top of the document.
+  function onScrollbar(e) {
+    const t = e.target;
+    if (t === document.documentElement || t === document.scrollingElement) return e.clientX >= t.clientWidth || e.clientY >= t.clientHeight;
+    return t instanceof Element && t.clientWidth > 0 && (e.offsetX >= t.clientWidth || e.offsetY >= t.clientHeight);
+  }
+
+  async function highlight({ id, keep = 30000, doc }) {
     checkDoc(doc);
-    const el = getEl(id);
+    const el = rowOf(getEl(id));
     el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
     await nextPaint();
     const b = box(el.getBoundingClientRect(), { color: "#F97316", width: 5 });
-    setTimeout(() => b.remove(), keep);
-    return { ok: true };
+    // Overlays are fixed to the viewport, so move this one with the element when the page, a scrolling container or
+    // the layout around it moves. Ends when the time is up, the user dismisses it or the overlay is cleared.
+    let frame = 0;
+    const place = () => {
+      frame = 0;
+      if (!b.isConnected || !el.isConnected) return done();
+      const r = el.getBoundingClientRect();
+      Object.assign(b.style, { left: r.left + "px", top: r.top + "px", width: r.width + "px", height: r.height + "px" });
+    };
+    const onMove = () => (frame ||= requestAnimationFrame(place));
+    const resized = new ResizeObserver(onMove);
+    const done = () => {
+      b.remove();
+      cancelAnimationFrame(frame);
+      clearTimeout(timer);
+      removeEventListener("scroll", onMove, true);
+      removeEventListener("resize", onMove);
+      resized.disconnect();
+      highlights.delete(done);
+      if (!highlights.size) {
+        removeEventListener("pointerdown", dismissHighlights, true);
+        removeEventListener("keydown", dismissHighlights, true);
+      }
+    };
+    if (!highlights.size) {
+      addEventListener("pointerdown", dismissHighlights, true);
+      addEventListener("keydown", dismissHighlights, true);
+    }
+    highlights.add(done);
+    addEventListener("scroll", onMove, { capture: true, passive: true });
+    addEventListener("resize", onMove, { passive: true });
+    resized.observe(document.body);
+    resized.observe(el);
+    const timer = setTimeout(done, keep);
+    return { ok: true, row: el.tagName === "TR" };
   }
 
   async function rectOf({ id, doc }) {
@@ -586,6 +718,7 @@
       const p = Math.min(Math.max(1, part | 0), parts.length);
       return { ...pageMeta(), part: p, parts: parts.length, text: parts[p - 1], doc: DOC };
     },
+    find: findText,
     getText: ({ maxChars = 300_000 }) => {
       const text = (readableRoot().innerText || "")
         .split("\n")
