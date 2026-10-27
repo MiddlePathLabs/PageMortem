@@ -1,9 +1,9 @@
-// Lantern content script. Injected on demand into the tab being read or operated.
+// PageMortem content script. Injected on demand into the tab being read or operated.
 // It never makes network requests; it only reads the DOM and performs the actions it is asked to.
 (() => {
   "use strict";
-  if (window.__lanternReady) return;
-  window.__lanternReady = true;
+  if (window.__pagemortemReady) return;
+  window.__pagemortemReady = true;
 
   // Identifies this document. The agent passes it back with every action so an id read from one
   // page can never act on another page that happens to reuse the same number.
@@ -160,7 +160,7 @@
       if (node.nodeType !== Node.ELEMENT_NODE) return;
       const el = node;
       const tag = el.tagName;
-      if (SKIP.has(tag) || el.getAttribute("aria-hidden") === "true" || el.hasAttribute("data-lantern-ui")) return;
+      if (SKIP.has(tag) || el.getAttribute("aria-hidden") === "true" || el.hasAttribute("data-pagemortem-ui")) return;
       if (!isVisible(el)) return;
 
       const kind = kindOf(el);
@@ -252,7 +252,7 @@
     let total = 0;
     for (const m of raw.matchAll(re)) {
       const first = lastAtOrBefore(chunkStarts, m.index);
-      // In an element token, only the label and link count; "[12 button" is Lantern's notation, not page text.
+      // In an element token, only the label and link count; "[12 button" is PageMortem's notation, not page text.
       if (tokens.has(first)) {
         const quote = out[first].indexOf('"');
         if (quote === -1 || m.index - chunkStarts[first] < quote) continue;
@@ -314,7 +314,7 @@
   function overlayRoot() {
     if (overlayHost?.isConnected) return overlayHost.__root;
     overlayHost = document.createElement("div");
-    overlayHost.setAttribute("data-lantern-ui", "");
+    overlayHost.setAttribute("data-pagemortem-ui", "");
     Object.assign(overlayHost.style, { position: "fixed", inset: "0", pointerEvents: "none", zIndex: "2147483647" });
     const root = overlayHost.attachShadow({ mode: "closed" });
     overlayHost.__root = root;
@@ -663,7 +663,7 @@
   // ---------- in-place translation ----------
   let segNodes = [];
   const originals = new Map();
-  const NO_TRANSLATE = "script,style,noscript,code,pre,kbd,samp,textarea,[translate=no],.notranslate,[data-lantern-ui]";
+  const NO_TRANSLATE = "script,style,noscript,code,pre,kbd,samp,textarea,[translate=no],.notranslate,[data-pagemortem-ui]";
 
   function collectSegments() {
     segNodes = [];
@@ -745,7 +745,7 @@
   };
 
   browser.runtime.onMessage.addListener((msg) => {
-    if (!msg || msg.lantern !== true) return;
+    if (!msg || msg.pagemortem !== true) return;
     const fn = handlers[msg.op];
     if (!fn) return Promise.resolve({ error: `unknown op ${msg.op}` });
     return Promise.resolve()

@@ -1,13 +1,13 @@
-// Live checks against a real OpenAI-compatible server. Skipped unless LANTERN_ENDPOINT is set, e.g.
-//   LANTERN_ENDPOINT=http://192.168.1.50:8080/v1 node --test tests/live.test.mjs
+// Live checks against a real OpenAI-compatible server. Skipped unless PAGEMORTEM_ENDPOINT is set, e.g.
+//   PAGEMORTEM_ENDPOINT=http://192.168.1.50:8080/v1 node --test tests/live.test.mjs
 // The browser is still faked; only the model is real.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { load, AGENT_FILES, Web, fakeUi, SETTINGS } from "./harness.mjs";
 
-const endpoint = process.env.LANTERN_ENDPOINT;
-const opts = { skip: !endpoint && "set LANTERN_ENDPOINT to run", timeout: 300000 };
-const base = { ...SETTINGS, endpoint, model: process.env.LANTERN_MODEL || "", maxTokens: 2048, requestTimeout: 240000 };
+const endpoint = process.env.PAGEMORTEM_ENDPOINT;
+const opts = { skip: !endpoint && "set PAGEMORTEM_ENDPOINT to run", timeout: 300000 };
+const base = { ...SETTINGS, endpoint, model: process.env.PAGEMORTEM_MODEL || "", maxTokens: 2048, requestTimeout: 240000 };
 
 function liveAgent(sites, settings, decide = () => "no") {
   const web = new Web(sites);

@@ -1,11 +1,11 @@
 {
   "manifest_version": 3,
-  "name": "Lantern",
+  "name": "PageMortem",
   "version": "0.3.0",
   "description": "Ask, summarize, translate and automate pages with your own LAN-hosted model. No other network access.",
   "browser_specific_settings": {
     "gecko": {
-      "id": "lantern@middlepathlabs.local",
+      "id": "pagemortem@middlepathlabs.local",
       "strict_min_version": "128.0",
       "data_collection_permissions": {
         "required": [
@@ -39,11 +39,11 @@
     ]
   },
   "action": {
-    "default_title": "Lantern",
+    "default_title": "PageMortem",
     "default_icon": "icons/icon.svg"
   },
   "sidebar_action": {
-    "default_title": "Lantern",
+    "default_title": "PageMortem",
     "default_panel": "sidebar/sidebar.html",
     "default_icon": "icons/icon.svg",
     "open_at_install": false
@@ -57,7 +57,7 @@
       "suggested_key": {
         "default": "Alt+Shift+L"
       },
-      "description": "Toggle the Lantern sidebar"
+      "description": "Toggle the PageMortem sidebar"
     }
   }
 }

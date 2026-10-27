@@ -47,16 +47,16 @@ test("saves only the images the model says match, into a folder named after the 
   assert.match(ui.cards[0].title, /Save images of “kittens chasing lasers” from gallery\.example\?/);
   assert.deepEqual(JSON.parse(JSON.stringify(ui.cards[0].permissions)), ["downloads"]);
   assert.deepEqual(saved(web), [
-    "Lantern/kittens-chasing-lasers/001-k-1.jpg",
-    "Lantern/kittens-chasing-lasers/002-k-2.jpg",
-    "Lantern/kittens-chasing-lasers/003-k-3.jpg",
+    "PageMortem/kittens-chasing-lasers/001-k-1.jpg",
+    "PageMortem/kittens-chasing-lasers/002-k-2.jpg",
+    "PageMortem/kittens-chasing-lasers/003-k-3.jpg",
   ]);
   assert.equal(checks.filter((c) => c === "k-1").length, 1, "a repeated image is checked once");
   assert.ok(!checks.includes(undefined));
   assert.equal(web.downloads.filter((d) => /^(data|blob):/.test(d.url)).length, 0, "data:/blob: images are never downloaded");
   assert.ok(web.downloads.every((d) => d.saveAs === false && d.conflictAction === "uniquify"));
   assert.deepEqual(JSON.parse(JSON.stringify(web.downloads[0].headers)), [{ name: "Referer", value: GALLERY }]);
-  assert.match(results(agent)[0], /Checked 6 images on gallery\.example; 3 matched “kittens chasing lasers”\. Saved 3 into Downloads\/Lantern\/kittens-chasing-lasers\//);
+  assert.match(results(agent)[0], /Checked 6 images on gallery\.example; 3 matched “kittens chasing lasers”\. Saved 3 into Downloads\/PageMortem\/kittens-chasing-lasers\//);
 });
 
 test("an empty description saves every image without asking the model", async () => {
@@ -64,7 +64,7 @@ test("an empty description saves every image without asking the model", async ()
   await run();
   assert.equal(checks.length, 0);
   assert.equal(web.downloads.length, 6);
-  assert.match(saved(web)[0], /^Lantern\/images-gallery-example\/001-k-1\.jpg$/);
+  assert.match(saved(web)[0], /^PageMortem\/images-gallery-example\/001-k-1\.jpg$/);
 });
 
 test("stops at the requested maximum", async () => {

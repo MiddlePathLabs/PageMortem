@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Set Lantern's network lock and build an installable lantern.xpi.
+"""Set PageMortem's network lock and build an installable pagemortem.xpi.
 
 Usage:
     python configure.py http://192.168.1.50:8080/v1
     python configure.py http://192.168.1.50:8080 http://192.168.1.51:8000   # several servers
 
 Rewrites the CSP `connect-src` in manifest.json so extension pages can reach only
-these origins, then packages the extension as lantern.xpi next to this script.
+these origins, then packages the extension as pagemortem.xpi next to this script.
 """
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parent
 MANIFEST = ROOT / "manifest.json"
-XPI = ROOT / "lantern.xpi"
+XPI = ROOT / "pagemortem.xpi"
 PACKAGED = ("manifest.json", "background.js", "icons", "lib", "content", "sidebar", "options")
 
 

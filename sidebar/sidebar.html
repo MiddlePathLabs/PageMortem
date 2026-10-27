@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Lantern</title>
+  <title>PageMortem</title>
   <link rel="stylesheet" href="sidebar.css">
 </head>
 <body>
@@ -26,7 +26,7 @@
   </div>
 
   <div class="ctxrow">
-    <div class="context" id="context" title="What Lantern will read"></div>
+    <div class="context" id="context" title="What PageMortem will read"></div>
     <label class="keep" id="keepWrap" title="Off: asking on a different page starts a fresh conversation. On: earlier pages stay in the conversation, so you can compare them (uses more of the model's context).">
       <input type="checkbox" id="keepPages"> Keep earlier pages
     </label>
@@ -47,7 +47,7 @@
     <button class="jump" id="jump" hidden aria-label="Scroll to the latest message">↓ Latest</button>
     <div class="modes" role="radiogroup" aria-label="Mode">
       <button role="radio" data-mode="ask" aria-checked="true" title="Answer from the current page(s)">Ask</button>
-      <button role="radio" data-mode="agent" aria-checked="false" title="Let Lantern click through pages to finish a task">Agent</button>
+      <button role="radio" data-mode="agent" aria-checked="false" title="Let PageMortem click through pages to finish a task">Agent</button>
     </div>
     <div class="inputrow">
       <textarea id="input" rows="2" placeholder="Ask about this page…" aria-label="Message"></textarea>

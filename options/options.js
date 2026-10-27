@@ -28,7 +28,7 @@ function showLock() {
   const el = $("lockStatus");
   const problem = lockProblem($("endpoint").value.trim());
   el.className = "hint " + (problem ? "bad" : "ok");
-  el.textContent = problem || `Network lock: Lantern can only contact ${lockedOrigins().join(", ")}.`;
+  el.textContent = problem || `Network lock: PageMortem can only contact ${lockedOrigins().join(", ")}.`;
 }
 
 function result(id, text, ok) {

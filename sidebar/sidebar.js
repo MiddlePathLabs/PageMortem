@@ -1,4 +1,4 @@
-// Lantern sidebar: UI plus all model traffic (bound by the manifest's connect-src lock).
+// PageMortem sidebar: UI plus all model traffic (bound by the manifest's connect-src lock).
 "use strict";
 
 const $ = (id) => document.getElementById(id);
@@ -468,7 +468,7 @@ async function checkSetup() {
     b.addEventListener("click", async () => {
       if (await browser.permissions.request({ origins: ["<all_urls>"] })) checkSetup();
     });
-    banner("Lantern needs permission to read and act on pages. This doesn't open any network access; the model endpoint lock still applies.", [b]);
+    banner("PageMortem needs permission to read and act on pages. This doesn't open any network access; the model endpoint lock still applies.", [b]);
     dot.classList.add("bad");
     label.textContent = "Needs permission";
     return;
@@ -596,7 +596,7 @@ async function init() {
     if (area === "local" && changes.settings && !state.running) applySettings();
   });
   browser.runtime.onMessage.addListener((m) => {
-    if (m?.type === "lantern:command") consumePending();
+    if (m?.type === "pagemortem:command") consumePending();
   });
   consumePending();
 }

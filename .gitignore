@@ -1,3 +1,3 @@
-lantern.xpi
+*.xpi
 node_modules/
 *.zip
