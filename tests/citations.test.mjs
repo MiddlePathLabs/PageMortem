@@ -16,6 +16,19 @@ test("citations require an exact quote from the named source, allowing only whit
   assert.deepEqual(Array.from(result.citations.slice(1), (c) => c.source), [null, null, null, null]);
 });
 
+test("repeated quotes share a number, and quotes used as the sentence's words are marked inline", () => {
+  const { prepareCitations } = chatLib();
+  const sources = [{ id: "s1", text: "A portable Windows tool. Needs an NVIDIA GPU. FFmpeg and FFprobe." }];
+  const text = [
+    "**TL;DR:** [[cite:s1|A portable Windows tool.]] for video.",
+    "- It requires [[cite:s1|Needs an NVIDIA GPU.]], [[cite:s1|FFmpeg and FFprobe.]]",
+    "- It is portable [[cite:s1|A portable Windows tool.]].",
+  ].join("\n");
+  const { markdown, citations } = prepareCitations(text, sources, "T");
+  assert.equal(citations.length, 3);
+  assert.equal(markdown, ["**TL;DR:** T1IEND for video.", "- It requires T2IEND, T3IEND", "- It is portableT1END."].join("\n"));
+});
+
 test("Ask cannot verify a passage beyond the sent page budget", async () => {
   const ctx = chatLib();
   const chat = new (ctx.$("Chat"))();

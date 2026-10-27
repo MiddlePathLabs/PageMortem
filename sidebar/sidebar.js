@@ -94,72 +94,260 @@ function addUser(text) {
   scrollDown(true);
 }
 
+/** A "Show on page" button that highlights a quote in its source tab, with a status line for the outcome. */
+function passageButton(source, quote, onError) {
+  const button = el("button", "linkish", "Show on page");
+  const status = el("p", "citation-status");
+  status.setAttribute("role", "status");
+  const show = async (trigger = button) => {
+    if (button.disabled) return;
+    button.disabled = true;
+    trigger.disabled = true;
+    status.textContent = "Locating passage…";
+    try {
+      const tab = await browser.tabs.get(source.tabId).catch(() => null);
+      if (!tab) throw new Error("The source tab is closed. The quoted snapshot is still available here.");
+      if (tab.url !== source.url) throw new Error("The source tab has navigated. The quoted snapshot is still available here.");
+      await browser.tabs.update(tab.id, { active: true });
+      await pageCall(tab.id, "showPassage", { quote, url: source.url, doc: source.doc });
+      status.textContent = "Highlighted for 30 seconds. Press Esc or click the page to clear it.";
+    } catch (e) {
+      status.textContent = e.message || String(e);
+      onError?.();
+    } finally {
+      button.disabled = false;
+      trigger.disabled = false;
+    }
+  };
+  button.addEventListener("click", () => show());
+  return { button, status, show };
+}
+
+// ---------- sources for Ask and Summarize answers ----------
+// Nothing shows until asked: hovering a paragraph or bullet offers "source", and selecting part of an answer offers the
+// sources of every point it touches. Local matches (lib/evidence.js) show at once; only weak ones go to the model.
+const evidenceAnswers = new Set(); // { body, claims: Map<block, claim>, reveal(claims) }
+
+/** A block's own words: without nested lists, our own controls, or a bold "Label:" lead-in. */
+function claimText(block) {
+  let text = "";
+  for (const node of block.childNodes) {
+    if (node.nodeType === Node.ELEMENT_NODE && node.matches("ul, ol, .evidence, .claim-src")) continue;
+    text += node.textContent;
+  }
+  const lead = block.firstElementChild;
+  if (lead?.tagName === "STRONG" && /:\s*$/.test(lead.textContent) && text.trimStart().startsWith(lead.textContent)) {
+    text = text.trimStart().slice(lead.textContent.length);
+  }
+  return text.trim();
+}
+
+function attachEvidence(body, sources) {
+  const evidence = new Evidence(sources);
+  if (!evidence.sentences.length) return;
+  const manyPages = new Set(evidence.sources.map((s) => `${s.tabId}|${s.url}`)).size > 1;
+  const claims = new Map();
+
+  const render = (claim) => {
+    const { panel, result } = claim;
+    panel.className = "evidence";
+    if (!result) {
+      panel.replaceChildren(el("p", "citation-status", "Looking for the passage on the page…"));
+      return;
+    }
+    if (result.kind === "none" || result.kind === "error") {
+      panel.classList.add("missing");
+      panel.replaceChildren(el("p", "citation-status", result.kind === "error"
+        ? `Couldn't check this point: ${result.message}`
+        : "Not found on the page. This point may come from the model rather than the page."));
+      return;
+    }
+    const parts = [];
+    if (result.kind === "weak") parts.push(el("p", "citation-status", "Closest passage, a weak match:"));
+    parts.push(el("q", null, result.quote));
+    if (manyPages) parts.push(el("div", "source-url", result.source.title || result.source.url));
+    const { button, status } = passageButton(result.source, result.quote);
+    parts.push(" ", button, status);
+    panel.replaceChildren(...parts);
+  };
+
+  const resolve = async (list) => {
+    const ask = [];
+    for (const claim of list) {
+      if (claim.pending || (claim.result && claim.result.kind !== "error")) continue;
+      if (claim.local?.score >= STRONG_MATCH) claim.result = { ...claim.local, kind: "match" };
+      else {
+        claim.result = null;
+        claim.pending = true;
+        ask.push(claim);
+      }
+    }
+    list.forEach(render);
+    if (!ask.length) return;
+    let found = [], failure = null;
+    try {
+      found = await modelEvidence({ claims: ask.map((c) => c.text), evidence, llm: state.llm });
+    } catch (e) {
+      failure = e;
+    }
+    ask.forEach((claim, i) => {
+      claim.pending = false;
+      const fallback = claim.local?.score >= WEAK_MATCH ? { ...claim.local, kind: "weak" } : null;
+      if (found[i]) claim.result = { ...found[i], kind: "match" };
+      else if (failure) claim.result = fallback || { kind: "error", message: failure.message || String(failure) };
+      else claim.result = fallback || { kind: "none" };
+      if (claim.panel.isConnected) render(claim);
+    });
+  };
+
+  /** Shows the sources of these claims; if all are already showing, hides them instead. */
+  const reveal = (list, { toggle = false } = {}) => {
+    if (toggle && list.every((c) => c.panel.isConnected)) {
+      for (const c of list) {
+        c.panel.remove();
+        c.block.classList.remove("has-evidence");
+      }
+      return;
+    }
+    for (const c of list) {
+      if (c.panel.isConnected) continue;
+      const nested = c.block.querySelector(":scope > ul, :scope > ol");
+      if (c.block.tagName === "LI") nested ? nested.before(c.panel) : c.block.append(c.panel);
+      else c.block.after(c.panel);
+      c.block.classList.add("has-evidence");
+    }
+    resolve(list);
+  };
+
+  for (const block of body.querySelectorAll("p, li")) {
+    const text = claimText(block);
+    if (evidenceWords(text).length < 3) continue;
+    const claim = { block, text, local: evidence.match(text), panel: el("div", "evidence"), result: undefined, pending: false };
+    claims.set(block, claim);
+    block.classList.add("claim");
+    const button = el("button", "claim-src", "source");
+    button.title = "Show where this point comes from on the page";
+    button.addEventListener("click", () => reveal([claim], { toggle: true }));
+    const nested = block.querySelector(":scope > ul, :scope > ol");
+    nested ? nested.before(button) : block.append(button);
+  }
+  if (claims.size) evidenceAnswers.add({ body, claims, reveal });
+}
+
+// Selecting part of an answer offers the sources for every point the selection touches.
+const selectionSources = el("button", "selection-src", "Show sources");
+selectionSources.hidden = true;
+document.body.append(selectionSources);
+let selectedClaims = null;
+function updateSelectionSources() {
+  selectionSources.hidden = true;
+  selectedClaims = null;
+  const sel = getSelection();
+  if (!sel.rangeCount || sel.isCollapsed) return;
+  const range = sel.getRangeAt(0);
+  for (const answer of [...evidenceAnswers]) {
+    if (!answer.body.isConnected) {
+      evidenceAnswers.delete(answer);
+      continue;
+    }
+    const list = [...answer.claims.values()].filter((c) => range.intersectsNode(c.block));
+    if (!list.length) continue;
+    // The selection's own paragraphs, not the bullets that merely contain them.
+    const innermost = list.filter((c) => !list.some((d) => d !== c && c.block.contains(d.block)));
+    selectedClaims = { answer, list: innermost };
+    break;
+  }
+  if (!selectedClaims) return;
+  const n = selectedClaims.list.length;
+  selectionSources.textContent = n === 1 ? "Show source" : `Show sources (${n})`;
+  const rect = range.getBoundingClientRect();
+  selectionSources.hidden = false;
+  const width = selectionSources.offsetWidth;
+  selectionSources.style.left = `${Math.max(8, Math.min(innerWidth - width - 8, rect.left + rect.width / 2 - width / 2))}px`;
+  selectionSources.style.top = `${Math.min(innerHeight - 36, rect.bottom + 6)}px`;
+}
+log.addEventListener("mouseup", () => setTimeout(updateSelectionSources));
+log.addEventListener("keyup", (e) => e.shiftKey && updateSelectionSources());
+log.addEventListener("scroll", () => (selectionSources.hidden = true), { passive: true });
+document.addEventListener("selectionchange", () => getSelection().isCollapsed && (selectionSources.hidden = true));
+selectionSources.addEventListener("mousedown", (e) => e.preventDefault()); // keep the selection while clicking
+selectionSources.addEventListener("click", () => {
+  if (selectedClaims) selectedClaims.answer.reveal(selectedClaims.list);
+  selectionSources.hidden = true;
+  getSelection().removeAllRanges();
+});
+
 function renderCitedAnswer(body, text, links, sources, final) {
   const token = `CITATION${[...crypto.getRandomValues(new Uint32Array(4))].map((n) => n.toString(36)).join("")}REF`;
   const { markdown, citations } = prepareCitations(text, sources, token);
   body.replaceChildren(...markdownNodes(markdown, { links }));
+  const section = el("details", "citations");
   const showPassages = [];
-  const cards = citations.map(({ quote, source }, index) => {
-    const card = el("details", "citation");
-    const heading = el("summary", null, `[${index + 1}] ${source?.title || source?.url || "Unverified citation"}`);
-    card.append(heading, el("blockquote", null, quote));
+  const items = citations.map(({ quote, source }, index) => {
+    const item = el("li", "citation");
+    item.value = index + 1;
+    item.append(el("q", null, quote));
     if (!source) {
-      card.append(el("p", "citation-status", "This quote could not be verified against the supplied source text."));
-      return card;
+      item.classList.add("unverified");
+      item.append(el("p", "citation-status", "Not found in the page text, so this quote is unverified."));
+      return item;
     }
-    card.append(el("div", "source-url", source.url));
-    const button = el("button", "btn", "Show on page");
-    const status = el("p", "citation-status");
-    status.setAttribute("role", "status");
-    showPassages[index] = async (trigger = button) => {
-      if (button.disabled) return;
-      button.disabled = true;
-      trigger.disabled = true;
-      status.textContent = "Locating passage…";
-      try {
-        const tab = await browser.tabs.get(source.tabId).catch(() => null);
-        if (!tab) throw new Error("The source tab is closed. The quoted snapshot is still available here.");
-        if (tab.url !== source.url) throw new Error("The source tab has navigated. The quoted snapshot is still available here.");
-        await browser.tabs.update(tab.id, { active: true });
-        await pageCall(tab.id, "showPassage", { quote, url: source.url, doc: source.doc });
-        status.textContent = "Passage highlighted for 30 seconds. Press Esc or click the page to clear it.";
-      } catch (e) {
-        status.textContent = e.message || String(e);
-        card.open = true;
-        card.scrollIntoView({ block: "nearest" });
-      } finally {
-        button.disabled = false;
-        trigger.disabled = false;
-      }
-    };
-    button.addEventListener("click", () => showPassages[index]());
-    card.append(button, status);
-    return card;
+    const { button, status, show } = passageButton(source, quote, () => {
+      section.open = true;
+      item.scrollIntoView({ block: "nearest" });
+    });
+    showPassages[index] = show;
+    item.append(" ", button, status);
+    return item;
   });
   const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT);
   const nodes = [];
   for (let node = walker.nextNode(); node; node = walker.nextNode()) if (node.nodeValue.includes(token)) nodes.push(node);
   for (const node of nodes) {
-    const parts = node.nodeValue.split(new RegExp(`${token}(\\d+)END`, "g"));
-    node.replaceWith(...parts.map((part, index) => {
-      if (!(index % 2)) return document.createTextNode(part);
-      const number = Number(part);
-      const ref = el("button", "citation-ref", `[${number}]`);
+    const parts = node.nodeValue.split(new RegExp(`${token}(\\d+)(I?)END`, "g"));
+    const out = [];
+    for (let i = 0; i < parts.length; i += 3) {
+      if (parts[i]) out.push(document.createTextNode(parts[i]));
+      if (i + 1 >= parts.length) break;
+      const number = Number(parts[i + 1]);
+      // The model used the quote as the sentence's own words: show them, or the sentence has holes.
+      if (parts[i + 2]) out.push(el("span", "cited-text", citations[number - 1].quote));
+      const ref = el("button", "citation-ref", String(number));
       ref.setAttribute("aria-label", showPassages[number - 1] ? `Show passage ${number} on page` : `View unverified citation ${number}`);
+      if (!citations[number - 1].source) ref.classList.add("unverified");
+      ref.title = citations[number - 1].quote;
       ref.addEventListener("click", () => {
         if (showPassages[number - 1]) return showPassages[number - 1](ref);
-        const card = cards[number - 1];
-        card.open = true;
-        card.scrollIntoView({ block: "nearest" });
-        card.querySelector("summary").focus();
+        section.open = true;
+        items[number - 1].scrollIntoView({ block: "nearest" });
       });
-      return ref;
-    }));
+      out.push(ref);
+    }
+    node.replaceWith(...out);
   }
-  if (cards.length) {
-    const section = el("section", "citations");
-    section.setAttribute("aria-label", "Quoted sources");
-    section.append(el("p", "context-help", "Check each quote in context to see whether it supports the claim."), ...cards);
+  if (items.length) {
+    // One list per source page, headed once, rather than repeating the page title on every quote.
+    const groups = new Map();
+    citations.forEach(({ source }, index) => {
+      const key = source ? `${source.tabId}|${source.url}` : "";
+      if (!groups.has(key)) groups.set(key, { source, items: [] });
+      groups.get(key).items.push(items[index]);
+    });
+    const pages = new Set(citations.filter((c) => c.source).map((c) => `${c.source.tabId}|${c.source.url}`)).size;
+    const unverified = citations.filter((c) => !c.source).length;
+    const label = [`${items.length} quote${items.length === 1 ? "" : "s"}`];
+    if (pages > 1) label.push(`${pages} pages`);
+    if (unverified) label.push(`${unverified} unverified`);
+    section.append(el("summary", null, `Sources · ${label.join(" · ")}`));
+    for (const { source, items: list } of groups.values()) {
+      const group = el("div", "citation-group");
+      if (source) group.append(el("div", "citation-source", source.title || source.url), el("div", "source-url", source.url));
+      else group.append(el("div", "citation-source", "Unverified"));
+      const ol = el("ol");
+      ol.append(...list);
+      group.append(ol);
+      section.append(group);
+    }
     body.append(section);
   } else if (final) {
     body.append(el("p", "context-help", "No passage citations supplied. Verify claims against the sources."));
@@ -188,18 +376,25 @@ function addBot({ agent = false } = {}) {
 
   // Model text is escaped, parsed inertly and allowlist-filtered. Links work only to pages the answer came from.
   let links = new Set();
-  let sources = null;
-  const show = (md, final = false) => sources
-    ? renderCitedAnswer(body, md, links, sources, final)
-    : body.replaceChildren(...markdownNodes(md, { links }));
+  let sources = null, evidenceSources = null;
+  const show = (md, final = false) => {
+    if (sources) return renderCitedAnswer(body, md, links, sources, final);
+    body.replaceChildren(...markdownNodes(md, { links }));
+    if (final && evidenceSources) attachEvidence(body, evidenceSources);
+  };
   let frame = 0, pendingText = "";
   const api = {
     /** Origins the answer may link to (a live Set is fine: the agent adds pages as it reads them). */
     links(origins) {
       links = origins;
     },
+    /** Agent answers: sources for the model's own [[cite:…]] markup. */
     citations(records) {
       sources = records.slice();
+    },
+    /** Ask and Summarize answers: page texts to find each point's source in, on request. */
+    evidence(records) {
+      evidenceSources = records.slice();
     },
     stream(text) {
       pendingText = text;
@@ -414,10 +609,10 @@ async function runAsk(question) {
     if (selection) bot.note(`Including selected text (${Math.min(selection.length, 6000)} chars).`);
     const { answer, fresh } = await state.chat.ask({
       question, pages, selection, llm: metered(state.llm, meter), settings: state.settings, keepPages: false,
-      onDelta: (t) => { bot.citations(state.chat.citations); bot.stream(t); }, signal: ctrl.signal,
+      onDelta: (t) => bot.stream(t), signal: ctrl.signal,
     });
     if (fresh) bot.note("Included pages changed, so this answer starts a fresh model conversation.");
-    bot.citations(state.chat.citations);
+    bot.evidence(state.chat.citations);
     bot.set(answer);
   } catch (e) {
     if (isAbort(e)) bot.note("Stopped.");
@@ -462,13 +657,14 @@ async function runSummarize() {
   setRunning({ stop: () => ctrl.abort() });
   const [page] = await readPages([tab]);
   const useSel = page.selection && page.selection.length > 40;
-  addUser(useSel ? "Summarize the selected text" : "Summarize this page");
+  const length = { brief: " briefly", detailed: " in detail" }[state.settings.summaryLength] || "";
+  addUser(`${useSel ? "Summarize the selected text" : "Summarize this page"}${length}`);
   const bot = addBot();
   try {
     if (page.error) throw new Error(page.error);
     const p = useSel ? { ...page, text: page.selection } : page;
     bot.links(new Set([originOf(page.url)]));
-    bot.citations([{ id: "summary", tabId: tab.id, doc: p.doc, url: p.url, title: p.title, text: p.text }]);
+    bot.evidence([{ tabId: tab.id, doc: p.doc, url: p.url, title: p.title, text: p.text }]);
     const answer = await summarize({
       page: p, llm: metered(state.llm, meter), settings: state.settings, signal: ctrl.signal,
       onDelta: (t) => bot.stream(t),
@@ -799,6 +995,12 @@ async function init() {
   if (!LANGUAGES.includes(state.settings.language)) langSel.append(new Option(state.settings.language, state.settings.language));
   langSel.value = state.settings.language;
   langSel.addEventListener("change", () => saveSettings({ language: langSel.value }));
+  const lengthSel = $("summaryLength");
+  lengthSel.value = SUMMARY_LENGTHS.includes(state.settings.summaryLength) ? state.settings.summaryLength : "standard";
+  lengthSel.addEventListener("change", () => {
+    state.settings.summaryLength = lengthSel.value; // a Summarize click right away mustn't wait for storage
+    saveSettings({ summaryLength: lengthSel.value });
+  });
 
   const { mode, askKeepPages } = await browser.storage.local.get(["mode", "askKeepPages"]);
   setMode(mode === "agent" ? "agent" : "ask");

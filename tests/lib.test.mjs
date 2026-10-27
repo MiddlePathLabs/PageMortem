@@ -236,6 +236,21 @@ test("Summarize splits long pages into parts and combines them", async () => {
   assert.match(model.calls[3].messages[1].content, /Part 1:\np1/);
 });
 
+test("Summarize asks for the chosen length, more points for long pages, and standard for unknown values", async () => {
+  const ctx = lib();
+  const prompt = async (summaryLength, text = "short page") => {
+    const model = scriptedModel([{ content: "a" }, { content: "b" }, { content: "c" }]);
+    await ctx.summarize({ page: { url: "https://a/", title: "T", text }, llm: model, settings: { ...SETTINGS, maxPageChars: 4000, summaryLength } });
+    return model.calls.at(-1).messages[1].content;
+  };
+  assert.match(await prompt("brief"), /exactly 3 bullet points/);
+  assert.match(await prompt("standard"), /3–7 bullet points/);
+  assert.match(await prompt("detailed"), /### heading.*8–15 points/s);
+  assert.match(await prompt("detailed", "x".repeat(6000)), /15–25 points/);
+  assert.match(await prompt("standard", "x".repeat(6000)), /5–10 bullet points/);
+  assert.match(await prompt("bogus"), /3–7 bullet points/);
+});
+
 test("Translate parses numbered segments, including loose numbering", () => {
   const { parseSegments } = lib();
   assert.deepEqual(plain([...parseSegments("[[1]] Hola\n[[2]] Mundo")]), [[1, "Hola"], [2, "Mundo"]]);

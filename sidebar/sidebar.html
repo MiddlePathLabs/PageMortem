@@ -44,7 +44,14 @@
   </details>
 
   <div class="quick">
-    <button id="summarize" class="chip">Summarize</button>
+    <div class="split">
+      <button id="summarize" class="chip">Summarize</button>
+      <select id="summaryLength" aria-label="Summary length">
+        <option value="brief">Brief</option>
+        <option value="standard" selected>Standard</option>
+        <option value="detailed">Detailed</option>
+      </select>
+    </div>
     <div class="split">
       <button id="translate" class="chip">Translate</button>
       <select id="lang" aria-label="Translate into"></select>
@@ -73,6 +80,7 @@
   <script src="../lib/save.js"></script>
   <script src="../lib/markdown.js"></script>
   <script src="../lib/chat.js"></script>
+  <script src="../lib/evidence.js"></script>
   <script src="../lib/agent.js"></script>
   <script src="sidebar.js"></script>
 </body>
