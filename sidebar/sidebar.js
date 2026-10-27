@@ -711,7 +711,7 @@ function setRunning(r) {
   send.textContent = r ? "Stop" : "Send";
   send.classList.toggle("stop", !!r);
   send.setAttribute("aria-label", r ? "Stop" : "Send");
-  for (const id of ["summarize", "translate", "restore", "newChat"]) $(id).disabled = !!r;
+  for (const id of ["summarize", "translate", "restore", "groupTabs", "newChat"]) $(id).disabled = !!r;
   for (const button of document.querySelectorAll(".modes button")) button.disabled = !!r;
   renderContext();
 }
@@ -864,6 +864,38 @@ async function runTranslate(presetSelection) {
     if (!r.total) bot.set("There's no visible text to translate on this page.");
     else if (ctrl.signal.aborted) bot.set(`Stopped after ${r.done} of ${r.total} text pieces. Use **Show original** to undo.`);
     else bot.set(`Translated the page into ${lang}.${r.failed ? ` ${r.failed} pieces were left as they were.` : ""} Use **Show original** to undo. Text that appears later (menus, “load more”) isn't translated until you run it again.`);
+  } catch (e) {
+    if (isAbort(e)) bot.note("Stopped.");
+    else bot.error(e);
+  } finally {
+    bot.stats(meter);
+  }
+}
+
+async function runGroupTabs() {
+  addUser("Suggest tab groups");
+  const bot = addBot();
+  if (!groupingSupported()) return bot.set("Tab groups need Firefox 139 or later.");
+  const tabs = await looseTabs(state.windowId);
+  if (tabs.length < GROUP_MIN_TABS) return bot.set(`There are only ${tabs.length} ungrouped tabs in this window. Nothing to group.`);
+  const ctrl = new AbortController();
+  const meter = new Meter();
+  setRunning({ stop: () => ctrl.abort() });
+  try {
+    const groups = await suggestGroups({ tabs, llm: metered(state.llm, meter), signal: ctrl.signal });
+    if (!groups.length) return bot.set("The model found no tabs that belong together.");
+    const placed = groups.reduce((n, g) => n + g.tabs.length, 0);
+    const extra = tabs.length > GROUP_MAX_TABS ? ` Only the first ${GROUP_MAX_TABS} were considered.` : "";
+    bot.set(`Suggested ${groups.length} group${groups.length === 1 ? "" : "s"} for ${placed} of ${tabs.length} ungrouped tabs.${extra}`);
+    const ans = await bot.confirm({
+      title: "Create these tab groups?",
+      detail: "Tabs not listed stay where they are. You can rename, recolor or ungroup them afterwards from the tab strip.",
+      actionLabel: "Create groups",
+      fields: groups.map((g) => ({ label: `${g.name} (${g.color})`, value: g.tabs.map((t) => t.title || t.url).join(" · ") })),
+    });
+    if (ans !== "yes") return;
+    const r = await applyGroups(groups, state.windowId);
+    bot.note(`Created ${r.created} group${r.created === 1 ? "" : "s"}.${r.skipped ? ` ${r.skipped} tabs had closed or changed and were left out.` : ""}`);
   } catch (e) {
     if (isAbort(e)) bot.note("Stopped.");
     else bot.error(e);
@@ -1212,6 +1244,7 @@ async function init() {
   $("summarize").addEventListener("click", () => guard(runSummarize));
   $("translate").addEventListener("click", () => guard(() => runTranslate("")));
   $("restore").addEventListener("click", runRestore);
+  $("groupTabs").addEventListener("click", () => guard(runGroupTabs));
   $("jump").addEventListener("click", () => scrollDown(true));
   $("newChat").addEventListener("click", () => {
     state.chat.reset();
