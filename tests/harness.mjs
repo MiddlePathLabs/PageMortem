@@ -44,12 +44,13 @@ export class Web {
     this.downloads = []; // { id, url, filename, state, mime, headers, removed, cancelled }
     this.granted = new Set(["downloads"]); // Firefox optional permissions already granted
     this.mimeFor = () => "image/jpeg";
+    this.notifications = [];
   }
 
   page(url) {
     const spec = this.sites[url] || { title: url, text: "" };
     if (spec.redirect) return this.page(spec.redirect);
-    return { url, spec, doc: `doc${++this.docSeq}`, elements: structuredClone(Object.fromEntries(Object.entries(spec.elements || {}).map(([k, v]) => [k, { ...v, onClick: undefined }]))) };
+    return { url, spec, doc: `doc${++this.docSeq}`, elements: structuredClone(Object.fromEntries(Object.entries(spec.elements || {}).map(([k, v]) => [k, { ...v, onClick: undefined, onKey: undefined }]))) };
   }
 
   addTab(url, extra = {}) {
@@ -93,7 +94,8 @@ export class Web {
         removeFile: async (id) => void (web.downloads[id - 1].removed = true),
         erase: async () => [],
       },
-      runtime: { getManifest: () => JSON.parse(fs.readFileSync(path.join(ROOT, "manifest.json"), "utf8")) },
+      notifications: { create: async (o) => void web.notifications.push(o) },
+      runtime: { getURL: (p) => `moz-extension://test/${p}`, getManifest: () => JSON.parse(fs.readFileSync(path.join(ROOT, "manifest.json"), "utf8")) },
       storage: { local: { get: async () => ({}), set: async () => {} } },
       scripting: { executeScript: async () => [] },
       tabs: {
@@ -106,6 +108,13 @@ export class Web {
           if (active) for (const o of web.tabs.values()) o.active = o.id === id;
           if (url) web.navigate(t, url);
           return web.view(t);
+        },
+        // `onReload(tab, web)` runs before each reload: change the page's text, or return a URL to redirect to.
+        reload: async (id) => {
+          const t = get(id);
+          t.reloads = (t.reloads || 0) + 1;
+          const to = web.sites[t.url]?.onReload?.(t, web);
+          web.navigate(t, to || t.url, { push: false });
         },
         goBack: async (id) => {
           const t = get(id);
@@ -169,6 +178,35 @@ export class Web {
         this.log.push(["type", tab.url, args]);
         if (args.submit && el.submitTo) this.navigate(tab, el.submitTo);
         return { ok: true };
+      case "pressKey": {
+        // Mirrors the content script: focus keys move focus, Enter/Space on a control behave like its click, Enter
+        // in a field submits, scroll keys scroll. `onKey(tab, web, key)` lets a page handle (and cancel) a key itself.
+        if (el.sensitive) return fail("Refused: this is a password/payment/ID field.");
+        this.log.push(["key", tab.url, args]);
+        const spec = d.spec.elements[args.id];
+        if (spec.onKey?.(tab, this, args.key)) return { ok: true, cancelled: true };
+        if (args.key === "Tab" || args.key === "Shift+Tab") return { ok: true, focused: { id: 99, kind: "input", label: "Next field" } };
+        if (el.kind === "input") {
+          if (args.key === "Enter" && el.submitTo) this.navigate(tab, el.submitTo);
+          return { ok: true, action: args.key === "Enter" ? "submit" : undefined };
+        }
+        if (args.key === "Enter" || args.key === "Space") {
+          if (spec.onClick) spec.onClick(tab, this);
+          else if (el.href && args.key === "Enter") this.navigate(tab, el.href);
+          return { ok: true, action: "activate" };
+        }
+        if (["PageDown", "PageUp", "Home", "End", "ArrowDown", "ArrowUp"].includes(args.key)) return { ok: true, action: "scroll", y: 100, height: 1000, atBottom: false };
+        return { ok: true };
+      }
+      case "waitFor": {
+        // `onWait(tab, web)` changes the page while the agent waits, e.g. results arriving or a redirect.
+        this.log.push(["wait", tab.url, args]);
+        d.spec.onWait?.(tab, this);
+        if (tab.doc !== d) throw new Error("Could not establish connection. Receiving end does not exist.");
+        const has = (q) => (tab.doc.spec.text || "").toLowerCase().includes(q.toLowerCase());
+        const met = (!args.text || has(args.text)) && (!args.gone || !has(args.gone));
+        return { met, waited: met ? 1200 : args.timeoutMs };
+      }
       case "select":
         this.log.push(["select", tab.url, args]);
         return { ok: true, selected: args.value };

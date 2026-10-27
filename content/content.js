@@ -580,6 +580,135 @@
     return { y: Math.round(scrollY), height: document.documentElement.scrollHeight, atBottom };
   }
 
+  const KEY_INFO = {
+    Escape: { key: "Escape", code: "Escape", keyCode: 27 },
+    Tab: { key: "Tab", code: "Tab", keyCode: 9 },
+    "Shift+Tab": { key: "Tab", code: "Tab", keyCode: 9, shiftKey: true },
+    ArrowUp: { key: "ArrowUp", code: "ArrowUp", keyCode: 38 },
+    ArrowDown: { key: "ArrowDown", code: "ArrowDown", keyCode: 40 },
+    ArrowLeft: { key: "ArrowLeft", code: "ArrowLeft", keyCode: 37 },
+    ArrowRight: { key: "ArrowRight", code: "ArrowRight", keyCode: 39 },
+    PageUp: { key: "PageUp", code: "PageUp", keyCode: 33 },
+    PageDown: { key: "PageDown", code: "PageDown", keyCode: 34 },
+    Home: { key: "Home", code: "Home", keyCode: 36 },
+    End: { key: "End", code: "End", keyCode: 35 },
+    Enter: { key: "Enter", code: "Enter", keyCode: 13 },
+    Space: { key: " ", code: "Space", keyCode: 32 },
+  };
+  // What a real key press activates; anything else gets the key's scrolling default, or nothing.
+  const ENTER_ACTIVATES = new Set(["link", "button", "tab", "menuitem", "option"]);
+  const SPACE_ACTIVATES = new Set(["button", "checkbox", "radio", "tab", "menuitem", "option"]);
+  const FOCUSABLE ="a[href], button, input:not([type=hidden]), select, textarea, summary, [tabindex], [contenteditable=''], [contenteditable=true]";
+
+  /** The element Tab (or Shift+Tab) would move to from `el`, in document order. */
+  function nextFocusable(el, back) {
+    const list = [...document.querySelectorAll(FOCUSABLE)].filter(
+      (e) => e === el || (isVisible(e) && !e.disabled && !(e.getAttribute("tabindex") < 0)),
+    );
+    const i = list.indexOf(el);
+    return list[back ? (i <= 0 ? list.length - 1 : i - 1) : (i + 1) % list.length] || null;
+  }
+
+  /** The element a scroll key moves: the nearest scrollable ancestor, else the page. */
+  function scrollerOf(el) {
+    for (let e = el; e && e !== document.body && e !== document.documentElement; e = e.parentElement) {
+      const s = getComputedStyle(e);
+      if (/(auto|scroll)/.test(s.overflowY + s.overflowX) && (e.scrollHeight > e.clientHeight || e.scrollWidth > e.clientWidth)) return e;
+    }
+    return document.scrollingElement || document.documentElement;
+  }
+
+  /**
+   * Press one key on element [N]. Events dispatched by an extension are untrusted, so Firefox performs none of a key's
+   * default actions; the page's own handlers run, and if none cancels the key, the usual default is done here: focus
+   * moves, the page scrolls, Enter/Space activate controls, Enter submits a field's form. Which of these is allowed is
+   * decided by the agent before this runs.
+   */
+  async function pressKey({ id, key, doc }) {
+    checkDoc(doc);
+    const el = getEl(id);
+    if (isSensitive(el)) throw new Error("Refused: this is a password/payment/ID field.");
+    actionable(el, id);
+    const k = KEY_INFO[key];
+    if (!k) throw new Error(`Unsupported key "${key}".`);
+    el.scrollIntoView({ block: "center", inline: "nearest" });
+    el.focus({ preventScroll: true });
+    await nextPaint();
+    flash(el);
+    const init = { ...k, which: k.keyCode, bubbles: true, cancelable: true, composed: true, view: window };
+    const notCancelled = el.dispatchEvent(new KeyboardEvent("keydown", init));
+    const kind = kindOf(el);
+    const out = { ok: true, cancelled: !notCancelled };
+    if (notCancelled) {
+      if (key === "Tab" || key === "Shift+Tab") {
+        const next = nextFocusable(el, key === "Shift+Tab");
+        if (next) {
+          next.focus();
+          out.focused = { id: getId(next), kind: kindOf(next) || next.tagName.toLowerCase(), label: clip(labelOf(next), 80) };
+        }
+      } else if (key === "Enter" && kind === "input") {
+        if (el.form && el.tagName !== "TEXTAREA") el.form.requestSubmit ? el.form.requestSubmit() : el.form.submit();
+        out.action = "submit";
+      } else if ((key === "Enter" && ENTER_ACTIVATES.has(kind)) || (key === "Space" && SPACE_ACTIVATES.has(kind))) {
+        el.click();
+        out.action = "activate";
+      } else if (kind !== "input" && kind !== "select") {
+        const sc = scrollerOf(el);
+        const page = Math.round((sc === document.scrollingElement ? innerHeight : sc.clientHeight) * 0.85);
+        const by = { ArrowUp: [0, -40], ArrowDown: [0, 40], ArrowLeft: [-40, 0], ArrowRight: [40, 0], PageUp: [0, -page], PageDown: [0, page], Space: [0, page] }[key];
+        if (by) sc.scrollBy(...by);
+        else if (key === "Home") sc.scrollTo(0, 0);
+        else if (key === "End") sc.scrollTo(0, sc.scrollHeight);
+        if (by || key === "Home" || key === "End") {
+          out.action = "scroll";
+          out.y = Math.round(scrollY);
+          out.height = document.documentElement.scrollHeight;
+          out.atBottom = innerHeight + scrollY >= document.documentElement.scrollHeight - 4;
+        }
+      }
+    }
+    el.dispatchEvent(new KeyboardEvent("keyup", init));
+    return out;
+  }
+
+  /**
+   * Wait until text appears on the page (or, with gone, disappears), as read_page would see it. Checks again whenever
+   * the page changes, at most every 250 ms. Resolves { met, waited } when met or after timeoutMs.
+   */
+  function waitFor({ text = "", gone = "", timeoutMs = 10000 }) {
+    const pattern = (q) => {
+      const words = clean(String(q)).split(" ").filter(Boolean);
+      return words.length ? new RegExp(words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+"), "i") : null;
+    };
+    const want = pattern(text);
+    const away = pattern(gone);
+    if (!want && !away) throw new Error("Give text to wait for, or text to wait to disappear.");
+    const met = () => {
+      const page = pageChunks().out.join("");
+      return (!want || want.test(page)) && (!away || !away.test(page));
+    };
+    const start = performance.now();
+    return new Promise((resolve) => {
+      let dirty = true;
+      const obs = new MutationObserver(() => (dirty = true));
+      obs.observe(document.documentElement, { subtree: true, childList: true, characterData: true, attributes: true });
+      const tick = () => {
+        const waited = Math.round(performance.now() - start);
+        if (dirty) {
+          dirty = false;
+          if (met()) return finish(true, waited);
+        }
+        if (waited >= timeoutMs) return finish(false, waited);
+        setTimeout(tick, 250);
+      };
+      const finish = (ok, waited) => {
+        obs.disconnect();
+        resolve({ met: ok, waited });
+      };
+      tick();
+    });
+  }
+
   /**
    * A table cell's whole row (so "RAM" is outlined together with "16 GB"), unless the row is page layout rather than
    * data: a presentation table, or a row taller than half the screen.
@@ -733,6 +862,8 @@
     type: typeText,
     select: selectOption,
     scroll: scrollPage,
+    pressKey,
+    waitFor,
     highlight,
     rect: rectOf,
     markImages,

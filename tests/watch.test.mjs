@@ -1,0 +1,150 @@
+// reload and watch: a long watch runs in code (one step, no model calls per check), stops on anything that could fake
+// the change, and never gets around the approval for what the agent does once the change happens.
+import test from "node:test";
+import assert from "node:assert/strict";
+import { setup, call, answer, results } from "./harness.mjs";
+
+const ITEM = "https://shop.example/item/42";
+const OUT = "Blue kettle. Out of stock. [1 button \"Add to cart\"]";
+const IN = "Blue kettle. In stock, ships tomorrow. [1 button \"Add to cart\"]";
+const cart = { 1: { kind: "button", label: "Add to cart" } };
+/** A product page that comes back in stock on the nth reload. */
+const restocks = (n) => ({ title: "Kettle", text: OUT, elements: cart, onReload: (tab) => void (tab.reloads >= n && (w0.text = IN)) });
+let w0;
+const item = (n) => (w0 = restocks(n));
+
+test("reload re-reads the page without asking", async () => {
+  const { run, ui, web, agent } = setup({
+    start: ITEM,
+    sites: { [ITEM]: { title: "Kettle", text: OUT, onReload: (tab) => void (web0.sites[ITEM].text = "reloaded text") } },
+    replies: [call("reload"), answer("ok")],
+  });
+  const web0 = web;
+  await run();
+  assert.equal(ui.cards.length, 0);
+  assert.equal(web.tabs.get(1).reloads, 1);
+  assert.match(results(agent)[0], /^Reloaded\.[\s\S]*reloaded text/);
+});
+
+test("watch reloads until the item is back in stock in one step, notifies, and Add to cart still needs approval", async () => {
+  const { run, ui, web, agent, model } = setup({
+    start: ITEM,
+    sites: { [ITEM]: item(3) },
+    replies: [call("watch", { gone: "Out of stock", every: 15 }), call("click", { id: 1 }), answer("not added")],
+    decide: (c) => (c.title === "Watch this page?" ? "yes" : "no"),
+  });
+  web.granted.add("notifications");
+  await run();
+  assert.equal(web.tabs.get(1).reloads, 3);
+  assert.equal(model.calls.length, 3, "the watch itself made no model calls");
+  assert.match(results(agent)[0], /^The change happened after .* \(4 checks\): “Out of stock” to disappear\. The user has been notified\.[\s\S]*In stock/);
+  assert.equal(web.notifications.length, 1);
+  assert.match(web.notifications[0].message, /shop\.example: “Out of stock” disappeared/);
+
+  const [watchCard, cartCard] = ui.cards;
+  assert.match(watchCard.detail, /every 15 s for up to 30 min/);
+  assert.equal(watchCard.permissions, undefined, "permission already granted");
+  assert.equal(cartCard.title, "Click “Add to cart”?");
+  assert.equal(cartCard.allowAll, null);
+  assert.equal(cartCard.remember, null, "a purchase step can't be remembered");
+  assert.equal(web.log.filter(([op]) => op === "click").length, 0);
+});
+
+test("without the notifications permission the card asks for it, but only as an option", async () => {
+  const { run, ui, web, agent } = setup({
+    start: ITEM,
+    sites: { [ITEM]: item(1) },
+    replies: [call("watch", { gone: "Out of stock", every: 15 }), answer("ok")],
+    decide: () => "yes",
+  });
+  await run();
+  assert.deepEqual([...ui.cards[0].permissions], ["notifications"]);
+  assert.equal(ui.cards[0].permissionsOptional, true);
+  assert.equal(web.notifications.length, 0);
+  assert.doesNotMatch(results(agent)[0], /notified/);
+});
+
+test("intervals under 15 seconds and watches over 4 hours are rejected", async () => {
+  const { run, agent, web } = setup({
+    start: ITEM,
+    sites: { [ITEM]: item(1) },
+    replies: [call("watch", { gone: "Out of stock", every: 5 }), call("watch", { gone: "Out of stock", minutes: 600 }), answer("ok")],
+  });
+  await run();
+  assert.match(results(agent)[0], /must be at least 15/);
+  assert.match(results(agent)[1], /must be at most 240/);
+  assert.equal(web.tabs.get(1).reloads, undefined);
+});
+
+test("watch needs something to look for, and returns at once when it's already there", async () => {
+  const { run, agent, ui } = setup({
+    start: ITEM,
+    sites: { [ITEM]: { title: "Kettle", text: IN, elements: cart } },
+    replies: [call("watch", {}), call("watch", { text: "In stock" }), answer("ok")],
+  });
+  await run();
+  assert.match(results(agent)[0], /give text that should appear/);
+  assert.match(results(agent)[1], /^No need to watch/);
+  assert.equal(ui.cards.length, 0);
+});
+
+test("a denied watch reloads nothing", async () => {
+  const { run, web, agent } = setup({ start: ITEM, sites: { [ITEM]: item(1) }, replies: [call("watch", { gone: "Out of stock" }), answer("ok")], decide: () => "no" });
+  await run();
+  assert.equal(web.tabs.get(1).reloads, undefined);
+  assert.match(results(agent)[0], /denied watching/);
+});
+
+test("a reload that lands on a login page stops the watch instead of counting as the change", async () => {
+  const LOGIN = "https://shop.example/login";
+  const { run, web, agent } = setup({
+    start: ITEM,
+    sites: { [ITEM]: { title: "Kettle", text: OUT, onReload: () => LOGIN }, [LOGIN]: { title: "Sign in", text: "Please sign in" } },
+    replies: [call("watch", { gone: "Out of stock", every: 15 }), answer("ok")],
+    decide: () => "yes",
+  });
+  web.granted.add("notifications");
+  await run();
+  assert.match(results(agent)[0], /^Stopped watching: reloading led to .*login/);
+  assert.equal(web.notifications.length, 0);
+});
+
+test("a reload that goes off-site is caught, undone and ends the watch", async () => {
+  const { run, ui, web, agent } = setup({
+    start: ITEM,
+    sites: { [ITEM]: { title: "Kettle", text: OUT, onReload: () => "https://evil.example/" } },
+    replies: [call("watch", { gone: "Out of stock", every: 15 }), answer("ok")],
+    decide: (c) => (c.title === "Watch this page?" ? "yes" : "no"),
+  });
+  await run();
+  assert.equal(ui.cards.at(-1).title, "The page went to another site. Continue there?");
+  assert.equal(web.tabs.get(1).url, ITEM);
+  assert.match(results(agent)[0], /^Stopped watching: after a reload, .*outside the sites approved/);
+});
+
+test("watch gives up at its time limit", async () => {
+  const { run, web, agent } = setup({
+    start: ITEM,
+    sites: { [ITEM]: item(1000) },
+    replies: [call("watch", { gone: "Out of stock", every: 15, minutes: 1 }), answer("ok")],
+    decide: () => "yes",
+  });
+  await run();
+  assert.match(results(agent)[0], /^Stopped watching after 1 min \(\d+ checks\): no sign of “Out of stock” to disappear/);
+  assert.ok(web.tabs.get(1).reloads >= 3 && web.tabs.get(1).reloads <= 4);
+});
+
+test("Stop ends a watch at once", async () => {
+  const { run, agent, model } = setup({
+    start: ITEM,
+    sites: { [ITEM]: item(1000) },
+    replies: [call("watch", { gone: "Out of stock", every: 600, minutes: 240 })],
+    decide: () => "yes",
+  });
+  const p = run();
+  setTimeout(() => agent.stop(), 100);
+  const t = Date.now();
+  await assert.rejects(p, /Stopped/);
+  assert.ok(Date.now() - t < 500);
+  assert.equal(model.calls.length, 1);
+});

@@ -198,8 +198,9 @@ function addBot({ agent = false } = {}) {
      * allowAll: label of a scoped "allow all for this task" button; remember: label of an "always allow for this
      * session" button. Either is null when the action must be approved on its own. permissions: optional Firefox
      * permissions to request when the user allows (Firefox only shows its prompt from inside a click handler).
+     * permissionsOptional: declining Firefox's prompt still allows the action, only without that permission.
      */
-    confirm({ title, detail, allowAll = null, remember = null, permissions = null }) {
+    confirm({ title, detail, allowAll = null, remember = null, permissions = null, permissionsOptional = false }) {
       return new Promise((resolve) => {
         const card = el("div", "confirm");
         card.append(el("div", "title", title), el("div", "detail", detail || ""));
@@ -214,10 +215,9 @@ function addBot({ agent = false } = {}) {
           const b = el("button", "btn " + (cls || ""), label);
           b.addEventListener("click", () => {
             if (!permissions?.length || ans === "no") return finish(ans, after);
-            browser.permissions.request({ permissions }).then(
-              (granted) => finish(granted ? ans : "no", granted ? after : "Firefox permission declined"),
-              () => finish("no", "Firefox permission declined"),
-            );
+            const declined = () =>
+              permissionsOptional ? finish(ans, `${after} (Firefox permission declined)`) : finish("no", "Firefox permission declined");
+            browser.permissions.request({ permissions }).then((granted) => (granted ? finish(ans, after) : declined()), declined);
           });
           return b;
         };
