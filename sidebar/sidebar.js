@@ -142,6 +142,21 @@ function addBot({ agent = false } = {}) {
         },
       };
     },
+    /** Small thumbnails in one grid per run of saves (save_images). */
+    thumb(url) {
+      let grid = list.lastElementChild?.querySelector(":scope > .thumbs");
+      if (!grid) {
+        const li = el("li");
+        grid = el("div", "thumbs");
+        li.append(el("span", "ic", ""), grid);
+        list.append(li);
+      }
+      const img = el("img");
+      img.src = url;
+      img.alt = "Saved image";
+      grid.append(img);
+      scrollDown();
+    },
     image(url) {
       const li = el("li");
       const img = el("img", "shot");
@@ -155,9 +170,10 @@ function addBot({ agent = false } = {}) {
     },
     /**
      * allowAll: label of a scoped "allow all for this task" button; remember: label of an "always allow for this
-     * session" button. Either is null when the action must be approved on its own.
+     * session" button. Either is null when the action must be approved on its own. permissions: optional Firefox
+     * permissions to request when the user allows (Firefox only shows its prompt from inside a click handler).
      */
-    confirm({ title, detail, allowAll = null, remember = null }) {
+    confirm({ title, detail, allowAll = null, remember = null, permissions = null }) {
       return new Promise((resolve) => {
         const card = el("div", "confirm");
         card.append(el("div", "title", title), el("div", "detail", detail || ""));
@@ -170,7 +186,13 @@ function addBot({ agent = false } = {}) {
         };
         const mk = (label, ans, cls, after) => {
           const b = el("button", "btn " + (cls || ""), label);
-          b.addEventListener("click", () => finish(ans, after));
+          b.addEventListener("click", () => {
+            if (!permissions?.length || ans === "no") return finish(ans, after);
+            browser.permissions.request({ permissions }).then(
+              (granted) => finish(granted ? ans : "no", granted ? after : "Firefox permission declined"),
+              () => finish("no", "Firefox permission declined"),
+            );
+          });
           return b;
         };
         row.append(mk("Allow", "yes", "primary", "Allowed"));
@@ -289,7 +311,7 @@ async function runAgent(task) {
     llm: metered(state.llm, meter),
     windowId: state.windowId,
     sessionGrants: state.sessionGrants,
-    ui: { step: (i, t, o) => bot.step(i, t, o), confirm: (o) => bot.confirm(o), image: (u) => bot.image(u) },
+    ui: { step: (i, t, o) => bot.step(i, t, o), confirm: (o) => bot.confirm(o), image: (u) => bot.image(u), thumb: (u) => bot.thumb(u) },
   });
   bot.links(agent.sources);
   setRunning({ stop: () => agent.stop() });

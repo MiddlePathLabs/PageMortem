@@ -14,6 +14,7 @@ function liveAgent(sites, settings, decide = () => "no") {
   const browser = web.browser();
   const ctx = load(AGENT_FILES, { browser, fetch, Response });
   web.addTab("https://shop.example/", { id: 1, active: true });
+  ctx.processShot = async (raw, o) => globalThis.__liveCrop?.(raw, o) ?? raw;
   const llm = new (ctx.$("LLM"))({ ...base, ...settings });
   const ui = fakeUi(decide);
   const agent = new (ctx.$("Agent"))({ settings: { ...base, ...settings }, llm, windowId: 1, ui });
@@ -62,4 +63,49 @@ test("a real model's risky click still stops at the approval card", opts, async 
   assert.ok(ui.cards.some((c) => /Delete my account/.test(c.title)), `cards: ${ui.cards.map((c) => c.title)}`);
   assert.equal(web.log.length, 0, "denied click never reached the page");
   console.log(`[gate] cards: ${ui.cards.map((c) => `${c.title} (allowAll: ${c.allowAll})`).join(", ")} | answer: ${out.slice(0, 100).replace(/\n/g, " ")}`);
+});
+
+// A tiny PNG encoder, so the live image check runs on real pixels without a browser canvas.
+import zlib from "node:zlib";
+function pngDataUrl(w, h, [r, g, b]) {
+  const crcTable = Array.from({ length: 256 }, (_, n) => {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    return c >>> 0;
+  });
+  const crc = (buf) => {
+    let c = 0xffffffff;
+    for (const x of buf) c = crcTable[(c ^ x) & 0xff] ^ (c >>> 8);
+    return (c ^ 0xffffffff) >>> 0;
+  };
+  const chunk = (type, data) => {
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(data.length);
+    const td = Buffer.concat([Buffer.from(type), data]);
+    const c = Buffer.alloc(4);
+    c.writeUInt32BE(crc(td));
+    return Buffer.concat([len, td, c]);
+  };
+  const row = Buffer.concat([Buffer.from([0]), Buffer.from(Array.from({ length: w }, () => [r, g, b]).flat())]);
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0);
+  ihdr.writeUInt32BE(h, 4);
+  ihdr.set([8, 2, 0, 0, 0], 8);
+  const png = Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", ihdr), chunk("IDAT", zlib.deflateSync(Buffer.concat(Array(h).fill(row)))), chunk("IEND", Buffer.alloc(0))]);
+  return `data:image/png;base64,${png.toString("base64")}`;
+}
+
+test("save_images: the real model's yes/no checks pick the matching images", opts, async () => {
+  const colors = { red1: [220, 30, 30], green: [30, 180, 60], blue: [40, 60, 220], red2: [200, 20, 40], yellow: [230, 220, 40] };
+  const names = Object.keys(colors);
+  const sites = { "https://shop.example/": { title: "Swatches", text: "colour swatches", screens: [names.map((n) => ({ src: `https://cdn.shop.example/${n}.png`, alt: n }))] } };
+  const { web, run } = liveAgent(sites, { toolMode: "native" }, () => "yes");
+  web.granted = new Set(["downloads"]);
+  // Crops would come from a screenshot; here each crop is the swatch itself.
+  const ctxCrop = (raw, { crop }) => pngDataUrl(96, 96, colors[names[crop.rect.x / 100]]);
+  globalThis.__liveCrop = ctxCrop;
+  const out = await run("Save the images that are solid red, then finish.");
+  const saved = web.downloads.map((d) => d.url.replace(/.*\//, ""));
+  console.log(`[images] saved: ${saved.join(", ") || "none"} | answer: ${out.slice(0, 120).replace(/\n/g, " ")}`);
+  assert.deepEqual(saved.sort(), ["red1.png", "red2.png"]);
 });

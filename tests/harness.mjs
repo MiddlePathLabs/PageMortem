@@ -28,7 +28,7 @@ export function load(files, extra = {}) {
   return ctx;
 }
 
-export const AGENT_FILES = ["lib/settings.js", "lib/llm.js", "lib/tabs.js", "lib/markdown.js", "lib/agent.js"];
+export const AGENT_FILES = ["lib/settings.js", "lib/llm.js", "lib/tabs.js", "lib/save.js", "lib/markdown.js", "lib/agent.js"];
 
 /**
  * A fake web. `sites[url]` describes a page: { title, text, elements: { [id]: info & { onClick?(tab, web) } },
@@ -41,6 +41,9 @@ export class Web {
     this.nextTab = 100;
     this.log = []; // actions that reached a page: [op, url, args]
     this.docSeq = 0;
+    this.downloads = []; // { id, url, filename, state, mime, headers, removed, cancelled }
+    this.granted = new Set(["downloads"]); // Firefox optional permissions already granted
+    this.mimeFor = () => "image/jpeg";
   }
 
   page(url) {
@@ -78,6 +81,18 @@ export class Web {
       return t;
     };
     return {
+      permissions: { contains: async ({ permissions }) => permissions.every((p) => web.granted.has(p)) },
+      downloads: {
+        download: async (o) => {
+          const d = { id: web.downloads.length + 1, ...o, state: "complete", mime: web.mimeFor(o.url) };
+          web.downloads.push(d);
+          return d.id;
+        },
+        search: async ({ id }) => web.downloads.filter((d) => d.id === id).map((d) => ({ ...d })),
+        cancel: async (id) => void (web.downloads[id - 1].cancelled = true),
+        removeFile: async (id) => void (web.downloads[id - 1].removed = true),
+        erase: async () => [],
+      },
       runtime: { getManifest: () => JSON.parse(fs.readFileSync(path.join(ROOT, "manifest.json"), "utf8")) },
       storage: { local: { get: async () => ({}), set: async () => {} } },
       scripting: { executeScript: async () => [] },
@@ -148,7 +163,16 @@ export class Web {
         this.log.push(["select", tab.url, args]);
         return { ok: true, selected: args.value };
       case "scroll":
+        if (args.direction === "top") tab.scrollIdx = 0;
+        else if (args.direction === "down") tab.scrollIdx = (tab.scrollIdx || 0) + 1;
         return { y: 100, height: 1000, atBottom: false };
+      case "listImages": {
+        // spec.screens: one list of { src, alt?, loaded? } per screenful, top to bottom.
+        const screens = d.spec.screens || [];
+        const i = Math.min(tab.scrollIdx || 0, Math.max(0, screens.length - 1));
+        const images = (screens[i] || []).map((im, k) => ({ id: 900 + k, rect: { x: k * 100, y: i, w: 90, h: 90 } /* y = screen index, so tests can tell crops apart */, loaded: true, alt: "", ...im }));
+        return { images, viewport: { w: 1280, h: 800 }, atBottom: i >= screens.length - 1, doc: d.doc };
+      }
       case "highlight":
         this.log.push(["highlight", tab.url, args]);
         return { ok: true };

@@ -297,28 +297,97 @@
     return r.width * r.height ? (w * h) / (r.width * r.height) : 0;
   }
 
-  async function markImages({ max = 60 } = {}) {
-    clearOverlay();
+  /** Image-like elements in view: <img>, <picture>, optionally <video>, and elements with a CSS background image. */
+  function imageCandidates({ max = 60, min = 48, minVisible = 0.4, video = true } = {}) {
     const found = [];
     const seen = new Set();
     const consider = (el, src) => {
       if (found.length >= max || seen.has(el)) return;
+      if (el.parentElement?.tagName === "PICTURE" && seen.has(el.parentElement)) return;
       const r = el.getBoundingClientRect();
-      if (r.width < 48 || r.height < 48 || visibleFraction(r) < 0.4) return;
+      if (r.width < min || r.height < min || visibleFraction(r) < minVisible) return;
       if (!isVisible(el)) return;
       seen.add(el);
       found.push({ el, r, src });
     };
-    for (const img of document.querySelectorAll("img, picture, video, [role=img]")) consider(img, "img");
+    for (const img of document.querySelectorAll(video ? "img, picture, video, [role=img]" : "img, picture, [role=img]")) consider(img, "img");
     let checked = 0;
     for (const el of document.querySelectorAll("div, a, span, li, figure, button, section")) {
       if (found.length >= max || ++checked > 4000) break;
       const r = el.getBoundingClientRect();
-      if (r.width < 48 || r.height < 48 || r.bottom < 0 || r.top > innerHeight) continue;
+      if (r.width < min || r.height < min || r.bottom < 0 || r.top > innerHeight) continue;
       if (!getComputedStyle(el).backgroundImage.includes("url(")) continue;
       if ([...seen].some((s) => el.contains(s) || s.contains(el))) continue;
       consider(el, "bg");
     }
+    return found;
+  }
+
+  const IMG_FILE_RE = /\.(jpe?g|png|gif|webp|avif|bmp|tiff?|svg)$/i;
+  const absUrl = (u) => {
+    try {
+      return new URL(u, location.href).href;
+    } catch {
+      return "";
+    }
+  };
+
+  /** Largest candidate in one or more srcset strings ("a.jpg 480w, b.jpg 1080w" or "a.jpg 1x, b.jpg 2x"). */
+  function srcsetBest(srcset) {
+    let best = "";
+    let bestSize = 0;
+    for (const part of srcset.split(/,\s+/)) {
+      const [url, d = "1x"] = part.trim().split(/\s+/);
+      const size = parseFloat(d) * (/x$/i.test(d) ? 1000 : 1);
+      if (url && size > bestSize) {
+        best = url;
+        bestSize = size;
+      }
+    }
+    return best;
+  }
+
+  /**
+   * The best downloadable address for an image element: a full-size file the image links straight to, else the
+   * largest srcset entry, else what is displayed (or the lazy-load source when a placeholder is displayed).
+   */
+  function imageSource(el) {
+    const link = el.closest("a[href]");
+    const href = link ? absUrl(link.getAttribute("href")) : "";
+    if (/^https?:/.test(href) && IMG_FILE_RE.test(new URL(href).pathname)) return href;
+    const img = el.tagName === "PICTURE" ? el.querySelector("img") : el;
+    if (img?.tagName === "IMG") {
+      const sets = [img.getAttribute("srcset"), ...[...(img.closest("picture")?.querySelectorAll("source[srcset]") || [])].map((s) => s.getAttribute("srcset"))];
+      const fromSet = srcsetBest(sets.filter(Boolean).join(", "));
+      const lazy = img.dataset.src || img.dataset.original || img.dataset.lazySrc || "";
+      const shown = img.currentSrc || img.getAttribute("src") || "";
+      return absUrl(fromSet || (shown.startsWith("data:") && lazy ? lazy : shown) || lazy);
+    }
+    const m = /url\(\s*(['"]?)(.*?)\1\s*\)/.exec(getComputedStyle(el).backgroundImage || "");
+    return m ? absUrl(m[2]) : "";
+  }
+
+  /** Images in view with their viewport rectangles (clipped to the viewport) and best source, for save_images. */
+  function listImages({ min = 80 } = {}) {
+    const images = imageCandidates({ max: 200, min, minVisible: 0.6, video: false }).map(({ el, r }) => {
+      const x = Math.max(0, r.left);
+      const y = Math.max(0, r.top);
+      const img = el.tagName === "PICTURE" ? el.querySelector("img") : el;
+      return {
+        id: getId(el),
+        rect: { x, y, w: Math.min(innerWidth, r.right) - x, h: Math.min(innerHeight, r.bottom) - y },
+        src: imageSource(el),
+        loaded: img?.tagName === "IMG" ? img.complete && img.naturalWidth > 0 : true,
+        alt: clip(clean(el.getAttribute("alt") || img?.getAttribute?.("alt") || el.getAttribute("aria-label") || el.getAttribute("title") || ""), 120),
+      };
+    });
+    const atBottom = innerHeight + scrollY >= document.documentElement.scrollHeight - 4;
+    return { images, viewport: { w: innerWidth, h: innerHeight }, atBottom, doc: DOC };
+  }
+
+  async function markImages({ max = 60 } = {}) {
+    clearOverlay();
+    const found = imageCandidates({ max });
     const list = found.map(({ el, r }) => {
       const id = getId(el);
       box(r, { label: id });
@@ -534,6 +603,7 @@
     highlight,
     rect: rectOf,
     markImages,
+    listImages,
     clearMarks: () => (clearOverlay(), { ok: true }),
     collectSegments,
     applySegments,
