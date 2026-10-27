@@ -420,10 +420,51 @@ async function bindSkills() {
   });
 }
 
+async function exportBackup() {
+  try {
+    const backup = await makeBackup();
+    const url = URL.createObjectURL(new Blob([JSON.stringify(backup, null, 2) + "\n"], { type: "application/json" }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `pagemortem-backup-${backup.exported.slice(0, 10)}.json`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+    const n = backup.skills.length;
+    result("backupResult", `Exported settings and ${n} skill${n === 1 ? "" : "s"}.`, true);
+  } catch (e) {
+    result("backupResult", `Could not export: ${e.message}`, false);
+  }
+}
+
+async function importBackup() {
+  const file = $("backupFile").files?.[0];
+  $("backupFile").value = "";
+  if (!file) return;
+  try {
+    const parsed = parseBackup(await file.text());
+    if (parsed.error) return result("backupResult", parsed.error, false);
+    const n = parsed.skills.length;
+    if (!confirm(`Replace the current settings and import ${n} skill${n === 1 ? "" : "s"} from ${file.name}?`)) return;
+    const restored = await restoreBackup(parsed);
+    fill(restored.settings);
+    showLock();
+    skills = restored.skills;
+    clearSkillForm();
+    renderSkills();
+    const skipped = restored.skipped.length ? ` Skipped: ${restored.skipped.join("; ")}.` : "";
+    const r = restored.restored;
+    result("backupResult", `Restored settings and ${r} skill${r === 1 ? "" : "s"}.${skipped}`, !restored.skipped.length);
+  } catch (e) {
+    result("backupResult", `Could not import: ${e.message}`, false);
+  }
+}
 
 async function init() {
   fill(await loadSettings());
   await bindSkills();
+  $("backupExport").addEventListener("click", exportBackup);
+  $("backupImport").addEventListener("click", () => $("backupFile").click());
+  $("backupFile").addEventListener("change", importBackup);
   showLock();
   $("endpoint").addEventListener("input", showLock);
   $("test").addEventListener("click", () => runCheck("test", "testResult", testConnection));

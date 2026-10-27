@@ -13,6 +13,8 @@ A Firefox sidebar that uses your own OpenAI-compatible model server to ask about
 3. In `about:addons`, open the gear menu, choose **Install Add-on From File…** and pick `pagemortem.xpi`.
 4. Open the sidebar with the toolbar button or **Alt+Shift+L**. Go to **Settings**, enter the endpoint (for example `http://192.168.1.50:8080/v1`), then click **Test connection**.
 
+**Updating:** re-run `configure.py`, then install the new `pagemortem.xpi` the same way, over the installed one. Don't remove PageMortem first: Firefox deletes an add-on's settings and skills when it is removed. Before a reinstall, use **Settings → Backup → Export backup**, and afterwards use **Import backup…** to restore everything. The backup file includes your API key.
+
 For quick iteration you can instead load `build/manifest.json` from `about:debugging` → **This Firefox** → **Load Temporary Add-on**. That copy is removed when Firefox restarts. After editing code, re-run `configure.py` and click **Reload**: `build/` is a copy, so edits to the source don't reach it until then. (Loading the top-level `manifest.json` works too, but its placeholder lock blocks your server.)
 
 ## Server notes
@@ -110,6 +112,7 @@ The tests run the extension's own scripts in Node with a simulated browser (the 
 | `lib/llm.js` | OpenAI-compatible client (streaming, tool calls, `<think>` stripping) |
 | `lib/chat.js` | Ask, Summarize, Translate |
 | `lib/skills.js` | Saved skills: per-skill storage, import, `@name` routing, prompt-skill requests, files for `read_skill_file` |
+| `lib/backup.js` | Export and import of settings and skills as one JSON file |
 | `lib/agent.js` | Agent loop, tools, approval rules |
 | `lib/tabs.js` | Script injection, navigation waits, screenshots |
 | `content/content.js` | Page reader with numbered elements, actions, in-place translation, image labels |

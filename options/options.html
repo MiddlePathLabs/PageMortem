@@ -155,6 +155,16 @@
       </div>
     </section>
 
+    <section aria-labelledby="backupHeading">
+      <h2 id="backupHeading">Backup</h2>
+      <p class="hint">Firefox deletes these settings and skills when PageMortem is uninstalled or a temporary copy is removed. To update, install the new <code>pagemortem.xpi</code> over the old one without removing it first. Export a backup before reinstalling. Importing replaces the settings and adds the backup's skills, replacing any with the same name. The file includes your API key.</p>
+      <div class="actions">
+        <button id="backupExport" type="button">Export backup</button>
+        <button id="backupImport" type="button">Import backup…</button>
+        <input id="backupFile" type="file" accept=".json,application/json" hidden>
+        <span id="backupResult" class="result" role="status" aria-live="polite" aria-atomic="true"></span>
+      </div>
+    </section>
 
     <div class="actions sticky">
       <button id="save" type="button" class="primary">Save settings</button>
@@ -164,6 +174,7 @@
   <script src="../lib/settings.js"></script>
   <script src="../lib/llm.js"></script>
   <script src="../lib/skills.js"></script>
+  <script src="../lib/backup.js"></script>
   <script src="options.js"></script>
 </body>
 </html>
