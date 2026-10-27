@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
-"""Set PageMortem's network lock and build an installable pagemortem.xpi.
+"""Lock PageMortem to your model server(s) and build it.
 
 Usage:
     python configure.py http://192.168.1.50:8080/v1
     python configure.py http://192.168.1.50:8080 http://192.168.1.51:8000   # several servers
 
-Rewrites the CSP `connect-src` in manifest.json so extension pages can reach only
-these origins, then packages the extension as pagemortem.xpi next to this script.
+Copies the extension into build/ with the CSP `connect-src` set so extension pages can
+reach only these origins, then packages that copy as pagemortem.xpi next to this script.
+The source manifest.json is never changed, so your server address stays out of git.
+build/ is replaced on every run.
 """
 from __future__ import annotations
 
 import json
 import re
+import shutil
 import sys
 import zipfile
 from pathlib import Path
@@ -19,6 +22,7 @@ from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parent
 MANIFEST = ROOT / "manifest.json"
+BUILD = ROOT / "build"
 XPI = ROOT / "pagemortem.xpi"
 PACKAGED = ("manifest.json", "background.js", "icons", "lib", "content", "sidebar", "options")
 
@@ -33,23 +37,33 @@ def to_origin(url: str) -> str:
     return f"{parts.scheme}://{parts.netloc}"
 
 
-def set_lock(origins: list[str]) -> None:
+def locked_manifest(origins: list[str]) -> str:
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
     csp: str = manifest["content_security_policy"]["extension_pages"]
     new_csp, n = re.subn(r"connect-src [^;]*", "connect-src " + " ".join(origins), csp)
     if n != 1:
         raise ValueError("manifest CSP must contain exactly one connect-src directive")
     manifest["content_security_policy"]["extension_pages"] = new_csp
-    MANIFEST.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    return json.dumps(manifest, indent=2) + "\n"
+
+
+def build(manifest: str) -> None:
+    if BUILD.exists():
+        shutil.rmtree(BUILD)
+    for name in PACKAGED:
+        src = ROOT / name
+        if src.is_dir():
+            shutil.copytree(src, BUILD / name)
+        else:
+            BUILD.mkdir(exist_ok=True)
+            shutil.copy2(src, BUILD / name)
+    (BUILD / "manifest.json").write_text(manifest, encoding="utf-8")
 
 
 def build_xpi() -> None:
     with zipfile.ZipFile(XPI, "w", zipfile.ZIP_DEFLATED) as z:
-        for name in PACKAGED:
-            path = ROOT / name
-            files = [path] if path.is_file() else sorted(p for p in path.rglob("*") if p.is_file())
-            for f in files:
-                z.write(f, f.relative_to(ROOT).as_posix())
+        for f in sorted(p for p in BUILD.rglob("*") if p.is_file()):
+            z.write(f, f.relative_to(BUILD).as_posix())
 
 
 def main(argv: list[str]) -> int:
@@ -58,13 +72,15 @@ def main(argv: list[str]) -> int:
         return 2
     try:
         origins = sorted({to_origin(a) for a in argv})
-        set_lock(origins)
-        build_xpi()
+        manifest = locked_manifest(origins)  # validate everything before touching build/
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    build(manifest)
+    build_xpi()
     print("Network lock set to:", ", ".join(origins))
-    print(f"Built {XPI.name}. Install it from about:addons (gear menu > Install Add-on From File).")
+    print(f"Built {BUILD.name}/ and {XPI.name}. Install the .xpi from about:addons (gear menu > Install Add-on From File),")
+    print(f"or load {BUILD.name}/manifest.json from about:debugging. Re-run this after changing the code.")
     return 0
 
 
