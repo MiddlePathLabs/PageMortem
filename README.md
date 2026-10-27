@@ -34,6 +34,10 @@ For quick iteration you can instead load `build/manifest.json` from `about:debug
 - Each reply ends with its speed and size (tokens per second, tokens in and out, cached prompt tokens). Hover for time to first token, prompt speed and speculative-draft acceptance. Numbers come from the server when it reports them (llama.cpp-style `timings`, or `usage`); otherwise they are estimated and marked `~`. Turn this off in Settings.
 - When an agent click is flagged only because of its label (for example “Close”), the card also offers **Always allow “Close” on this site**. That choice lasts until you start a new conversation or close the sidebar, and covers only that exact label on that site. It is never offered for purchases, deletions, messages, account or permission actions, form submissions, downloads or risky link addresses.
 
+### Multi-page exploration
+
+Agent's `open_link` accepts up to five links per call and loads and reads up to three pages concurrently in background tabs. Results stay in requested link order, and the current tab stays unchanged. Site, download, and redirect approval prompts are handled one at a time. A denied or failed link does not discard other results; Stop cancels the batch and waits for workers to settle before cleaning up agent-created tabs.
+
 ### Passage citations
 
 Ask, Summarize, and Agent request inline passage citations. Select a numbered citation to jump straight to the passage in its source tab and highlight its text for 30 seconds. Source details stay collapsed on a successful jump; expand a source entry below the answer to inspect its title, URL, and quote or use **Show on page** again. Navigation errors automatically expand the relevant entry. Press Esc or click the page to clear the highlight.

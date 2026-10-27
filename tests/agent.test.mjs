@@ -116,6 +116,111 @@ test("open_link whose target redirects off-site closes the tab instead of readin
   assert.doesNotMatch(results(agent)[0], /tracker page/);
 });
 
+test("open_link overlaps three pages, refills freed slots, and returns input-order sources", { timeout: 3000 }, async () => {
+  const ids = [1, 2, 3, 4, 5];
+  const sites = { [SHOP]: page("Shop", "", Object.fromEntries(ids.map((id) =>
+    [id, { kind: "link", label: `Page ${id}`, href: `${SHOP}${id}` }]))) };
+  for (const id of ids) sites[`${SHOP}${id}`] = page(`Page ${id}`, `Content ${id}`);
+  const { run, agent, web } = setup({ sites, replies: [call("open_link", { ids }), answer("ok")] });
+  const handle = web.handle.bind(web);
+  const releases = new Map();
+  const arrivals = new Map(ids.map((id) => {
+    let resolve;
+    const promise = new Promise((r) => { resolve = r; });
+    return [id, { promise, resolve }];
+  }));
+  web.handle = async (tab, op, args) => {
+    if (op === "readPage" && tab.id !== 1) {
+      const id = Number(new URL(tab.url).pathname.slice(1));
+      await new Promise((resolve) => {
+        releases.set(id, resolve);
+        arrivals.get(id).resolve();
+      });
+    }
+    return handle(tab, op, args);
+  };
+  const running = run();
+  await Promise.all(ids.slice(0, 3).map((id) => arrivals.get(id).promise));
+  assert.equal(web.tabs.size, 4, "only three background pages may be in flight");
+  releases.get(3)();
+  await arrivals.get(4).promise;
+  releases.get(4)();
+  await arrivals.get(5).promise;
+  releases.get(5)();
+  releases.get(2)();
+  releases.get(1)();
+  await running;
+  const text = results(agent)[0];
+  assert.deepEqual([...text.matchAll(/=== Link \[(\d+)\]/g)].map((m) => Number(m[1])), ids);
+  for (const id of ids) {
+    const sourceId = text.match(new RegExp(`URL: ${SHOP}${id}\\nSource ID: (a\\d+)`))[1];
+    assert.equal(agent.citations.find((s) => s.id === sourceId).text, `Content ${id}`);
+  }
+  assert.equal(agent.focus, 1);
+  assert.deepEqual([...web.tabs.keys()], [1]);
+});
+
+test("open_link serializes site and redirect approvals and isolates denied links", { timeout: 3000 }, async () => {
+  let active = 0;
+  let peak = 0;
+  const { run, web, agent, ui } = setup({
+    sites: {
+      [SHOP]: page("Shop", "", {
+        1: { kind: "link", href: "https://denied.example/" },
+        2: { kind: "link", href: "https://docs.example/a" },
+        3: { kind: "link", href: "https://docs.example/b" },
+      }),
+      "https://docs.example/a": { redirect: "https://redirect.example/" },
+      "https://redirect.example/": page("Redirect", "Do not read"),
+      "https://docs.example/b": page("Docs", "Allowed documentation"),
+    },
+    replies: [call("open_link", { ids: [1, 2, 3] }), answer("ok")],
+    decide: async (card) => {
+      peak = Math.max(peak, ++active);
+      await new Promise((resolve) => setImmediate(resolve));
+      active--;
+      return card.detail.includes("https://docs.example/") ? "yes" : "no";
+    },
+  });
+  await run();
+  assert.equal(peak, 1);
+  assert.equal(ui.cards.length, 3, "one docs-site approval covers both docs links");
+  assert.match(results(agent)[0], /\[1\]: The user denied/);
+  assert.match(results(agent)[0], /\[2\]: Stopped there/);
+  assert.match(results(agent)[0], /Allowed documentation/);
+  assert.doesNotMatch(results(agent)[0], /Do not read/);
+  assert.deepEqual([...web.tabs.keys()], [1]);
+});
+
+test("Stop drains pending tab creations before cleaning up concurrent open_link workers", { timeout: 3000 }, async () => {
+  const ids = [1, 2, 3, 4, 5];
+  const { run, agent, ctx, web, model } = setup({
+    sites: { [SHOP]: page("Shop", "", Object.fromEntries(ids.map((id) =>
+      [id, { kind: "link", href: `${SHOP}${id}` }]))) },
+    replies: [call("open_link", { ids }), answer("must not run")],
+  });
+  const create = ctx.browser.tabs.create;
+  const pending = [];
+  let ready;
+  const started = new Promise((resolve) => { ready = resolve; });
+  ctx.browser.tabs.create = async (args) => {
+    await new Promise((resolve) => {
+      pending.push(resolve);
+      if (pending.length === 3) ready();
+    });
+    return create(args);
+  };
+  const running = run();
+  const stopped = assert.rejects(running, /Stopped/);
+  await started;
+  agent.stop();
+  for (const resolve of pending) resolve();
+  await stopped;
+  assert.equal(pending.length, 3, "queued links never start after Stop");
+  assert.equal(model.calls.length, 1);
+  assert.deepEqual([...web.tabs.keys()], [1], "late-created tabs are also cleaned up");
+});
+
 test("switching to a tab the user didn't select asks first and doesn't widen the scope when denied", async () => {
   const { run, agent, ui } = setup({
     sites: { [SHOP]: page("Shop", ""), "https://bank.example/": page("Bank", "balance 1000") },
