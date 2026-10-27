@@ -24,10 +24,38 @@ const state = {
 
 // ---------- log rendering ----------
 const log = $("log");
-const nearBottom = () => log.scrollHeight - log.scrollTop - log.clientHeight < 80;
+// Auto-scroll: while "pinned", the log follows new output, including content that grows later (images loading,
+// cards, the final answer). Scrolling up unpins it and shows "Latest"; scrolling back down, pressing "Latest",
+// sending a message or an approval card pins it again.
+let pinned = true;
+let autoTop = 0; // where auto-scroll last put the view, to tell our own scrolling apart from the user's
+const nearBottom = () => log.scrollHeight - log.scrollTop - log.clientHeight < 40;
+function updateJump() {
+  $("jump").hidden = pinned || log.scrollHeight <= log.clientHeight;
+}
+function stick() {
+  if (!pinned) return;
+  log.scrollTop = log.scrollHeight;
+  autoTop = log.scrollTop;
+  updateJump();
+}
 const scrollDown = (force) => {
-  if (force || nearBottom()) log.scrollTop = log.scrollHeight;
+  if (force) pinned = true;
+  stick();
 };
+log.addEventListener(
+  "scroll",
+  () => {
+    // Content added between our scroll and this event mustn't count as the user leaving the bottom.
+    pinned = nearBottom() || log.scrollTop >= autoTop - 1;
+    updateJump();
+  },
+  { passive: true },
+);
+// Observer callbacks already batch changes, so they can scroll straight away.
+new MutationObserver(stick).observe(log, { childList: true, subtree: true, characterData: true });
+log.addEventListener("load", stick, true); // images get their height only once loaded
+new ResizeObserver(stick).observe(log); // sidebar resized
 
 function showWelcome() {
   log.replaceChildren();
@@ -96,9 +124,7 @@ function addBot({ agent = false } = {}) {
       if (frame) return;
       frame = requestAnimationFrame(() => {
         frame = 0;
-        const stick = nearBottom();
-        if (pendingText) show(pendingText);
-        if (stick) scrollDown(true);
+        if (pendingText) show(pendingText); // auto-scroll follows if pinned
       });
     },
     set(text) {
@@ -551,6 +577,7 @@ async function init() {
   $("summarize").addEventListener("click", () => guard(runSummarize));
   $("translate").addEventListener("click", () => guard(() => runTranslate("")));
   $("restore").addEventListener("click", runRestore);
+  $("jump").addEventListener("click", () => scrollDown(true));
   $("newChat").addEventListener("click", () => {
     state.chat.reset();
     state.sessionGrants.clear();
