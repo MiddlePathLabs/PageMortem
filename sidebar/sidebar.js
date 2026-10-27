@@ -20,6 +20,10 @@ const state = {
   confirms: new Set(), // resolvers of open approval prompts
   keepPages: false, // Ask: keep earlier pages in the conversation when the page changes
   sessionGrants: new Set(), // agent "Always allow" choices, kept until a new conversation
+  contextPages: new Map(),
+  excludedPages: new Set(),
+  contextTabs: [],
+  contextBusy: false,
 };
 
 // ---------- log rendering ----------
@@ -200,12 +204,19 @@ function addBot({ agent = false } = {}) {
      * permissions to request when the user allows (Firefox only shows its prompt from inside a click handler).
      * permissionsOptional: declining Firefox's prompt still allows the action, only without that permission.
      */
-    confirm({ title, detail, allowAll = null, remember = null, permissions = null, permissionsOptional = false }) {
+    confirm({ title, detail, actionLabel = "Allow action", fields = [], allowAll = null, remember = null, permissions = null, permissionsOptional = false }) {
       return new Promise((resolve) => {
-        const card = el("div", "confirm");
+        const card = el("section", "confirm");
+        card.setAttribute("aria-label", title);
         card.append(el("div", "title", title), el("div", "detail", detail || ""));
+        if (fields.length) {
+          const preview = el("dl", "approval-fields");
+          for (const field of fields) preview.append(el("dt", null, field.label), el("dd", null, field.value));
+          card.append(preview);
+        }
         const row = el("div", "row");
         const finish = (ans, label) => {
+          if (!state.confirms.has(finish)) return;
           state.confirms.delete(finish);
           card.classList.add("answered");
           card.append(el("div", "dimline", label));
@@ -214,6 +225,10 @@ function addBot({ agent = false } = {}) {
         const mk = (label, ans, cls, after) => {
           const b = el("button", "btn " + (cls || ""), label);
           b.addEventListener("click", () => {
+            if (b.disabled) return;
+            if (permissions?.length && ans !== "no") {
+              for (const button of row.children) button.disabled = true;
+            }
             if (!permissions?.length || ans === "no") return finish(ans, after);
             const declined = () =>
               permissionsOptional ? finish(ans, `${after} (Firefox permission declined)`) : finish("no", "Firefox permission declined");
@@ -221,7 +236,7 @@ function addBot({ agent = false } = {}) {
           });
           return b;
         };
-        row.append(mk("Allow", "yes", "primary", "Allowed"));
+        row.append(mk(actionLabel, "yes", "primary", `${actionLabel}: allowed`));
         if (allowAll) row.append(mk(allowAll, "all", "", `${allowAll}: allowed for the rest of this task`));
         if (remember) row.append(mk(remember, "session", "", `${remember}: allowed until you start a new conversation`));
         row.append(mk("Deny", "no", "", "Denied"));
@@ -229,7 +244,7 @@ function addBot({ agent = false } = {}) {
         (list ? list.parentElement : extra).after(card);
         state.confirms.add(finish);
         scrollDown(true);
-        row.firstChild.focus();
+        row.lastChild.focus();
       });
     },
     progress(done, total, label) {
@@ -275,6 +290,8 @@ function setRunning(r) {
   send.classList.toggle("stop", !!r);
   send.setAttribute("aria-label", r ? "Stop" : "Send");
   for (const id of ["summarize", "translate", "restore", "newChat"]) $(id).disabled = !!r;
+  for (const button of document.querySelectorAll(".modes button")) button.disabled = !!r;
+  renderContext();
 }
 
 function stopRunning() {
@@ -301,22 +318,27 @@ async function activeTab() {
 }
 
 async function runAsk(question) {
-  const tabs = await contextTabs(state.windowId);
   const bot = addBot();
   const ctrl = new AbortController();
   const meter = new Meter();
   setRunning({ stop: () => ctrl.abort() });
   try {
-    const pages = await readPages(tabs);
+    await bounded(syncContext({ reread: true }), { signal: ctrl.signal });
+    ctrl.signal.throwIfAborted();
+    const pages = [...state.contextPages.values()].map((entry) => ({
+      ...entry.page, selection: entry.selectionExcluded ? "" : entry.page?.selection,
+    }));
+    if (!pages.length) throw new Error("No pages included. Expand Context and add an open tab.");
+    if (pages.some((page) => !page.url)) throw new Error("Context is still loading. Refresh context and try again.");
     for (const p of pages) if (p.error) bot.note(`Couldn't read “${p.title || p.url}”: ${p.error}`);
     bot.links(new Set(pages.map((p) => originOf(p.url))));
-    const selection = pages.find((p) => p.tab.active)?.selection || "";
-    if (selection) bot.note(`Including your selected text (${selection.length} chars).`);
+    const selection = pages.map((p) => p.selection || "").filter(Boolean).join("\n\n");
+    if (selection) bot.note(`Including selected text (${Math.min(selection.length, 6000)} chars).`);
     const { answer, fresh } = await state.chat.ask({
-      question, pages, selection, llm: metered(state.llm, meter), settings: state.settings, keepPages: state.keepPages,
+      question, pages, selection, llm: metered(state.llm, meter), settings: state.settings, keepPages: false,
       onDelta: (t) => bot.stream(t), signal: ctrl.signal,
     });
-    if (fresh) bot.note("Different page, so this started a fresh conversation. Turn on “Keep earlier pages” to compare with pages you asked about before.");
+    if (fresh) bot.note("Included pages changed, so this answer starts a fresh model conversation.");
     bot.set(answer);
   } catch (e) {
     if (isAbort(e)) bot.note("Stopped.");
@@ -445,9 +467,20 @@ function send() {
 
 function setMode(mode) {
   state.mode = mode;
-  for (const b of document.querySelectorAll(".modes button")) b.setAttribute("aria-checked", String(b.dataset.mode === mode));
+  for (const b of document.querySelectorAll(".modes button")) {
+    const selected = b.dataset.mode === mode;
+    b.setAttribute("aria-checked", String(selected));
+    b.tabIndex = selected ? 0 : -1;
+  }
   $("input").placeholder = mode === "agent" ? "Describe a task, e.g. “summarize the last 3 releases”" : "Ask about this page…";
   $("keepWrap").hidden = mode !== "ask";
+  $("modeHelp").textContent = mode === "agent"
+    ? "Can interact with pages. Requests approval for detected risky actions; ordinary controls can still have site-script side effects."
+    : "Reads the included pages. Does not interact with websites.";
+  $("contextHelp").textContent = mode === "agent"
+    ? "Agent starts on the active tab and can read selected tabs. These are starting tabs, not a navigation restriction. Further reads and actions appear in the task log; approvals still apply."
+    : "Ask uses the pages below. Removing a source resets model conversation history, including earlier answers.";
+  renderContext();
   browser.storage.local.set({ mode }).catch(() => {});
 }
 
@@ -501,20 +534,158 @@ async function checkSetup() {
 }
 
 let ctxTimer = 0;
+let contextVersion = 0;
+const sourceKey = (tab) => `${tab.id}|${tab.url}`;
+
+function resetContextHistory(message) {
+  state.chat.reset();
+  $("contextStatus").textContent = message + " Model conversation history was reset.";
+}
+
+function contextButton(label, action) {
+  const button = el("button", "btn", label);
+  button.disabled = !!state.running || state.contextBusy || state.mode !== "ask";
+  button.addEventListener("click", action);
+  return button;
+}
+
+function renderContext() {
+  const entries = [...state.contextPages.values()];
+  const count = entries.length;
+  const selectionCount = entries.filter((entry) => entry.page?.selection && !entry.selectionExcluded).length;
+  $("context").textContent = state.mode === "agent" ? "Context · Agent uses active / selected tabs"
+    : `Context · ${count} page${count === 1 ? "" : "s"}${selectionCount ? ` + ${selectionCount} selection${selectionCount === 1 ? "" : "s"}` : ""}`;
+  const list = $("contextList");
+  list.replaceChildren();
+  const agentMode = state.mode === "agent";
+  document.querySelector(".context-actions").hidden = agentMode;
+  if (agentMode) {
+    const highlighted = state.contextTabs.filter((tab) => tab.highlighted);
+    const tabs = highlighted.length > 1 ? highlighted : state.contextTabs.filter((tab) => tab.active);
+    $("context").textContent = `Context · ${tabs.length} Agent starting tab${tabs.length === 1 ? "" : "s"}`;
+    for (const tab of tabs) {
+      const item = el("section", "source");
+      item.append(el("strong", null, tab.title || tab.url), el("div", "source-url", tab.url),
+        el("p", "context-help", tab.active ? "Active tab · read when the task starts" : "Selected tab · available to the agent"));
+      list.append(item);
+    }
+    return;
+  }
+  const perPage = Math.floor((state.settings?.maxPageChars || 24000) / Math.max(1, count));
+  for (const entry of entries) {
+    const { tab, page, readAt, pinned } = entry;
+    const item = el("section", "source");
+    item.append(el("strong", null, page?.title || tab.title || tab.url));
+    item.append(el("div", "source-url", tab.url));
+    const length = Math.max(page?.length || 0, page?.text?.length || 0);
+    const sent = Math.min(page?.text?.length || 0, perPage);
+    const time = readAt ? new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit", second: "2-digit" }).format(readAt) : "";
+    item.append(el("p", "context-help", !page ? "Reading…" : page.error ? `Unreadable: ${page.error}` :
+      `Read ${time} · ${sent.toLocaleString()} of ${length.toLocaleString()} characters${sent < length ? " · truncated" : " · full extracted text"}${pinned ? " · pinned snapshot" : ""}`));
+    const actions = el("div", "source-actions");
+    actions.append(
+      contextButton("Refresh", () => refreshSource(sourceKey(tab))),
+      contextButton(pinned ? "Unpin" : "Pin snapshot", () => {
+        entry.pinned = !entry.pinned;
+        renderContext();
+      }),
+      contextButton("Remove", () => {
+        state.excludedPages.add(sourceKey(tab));
+        state.contextPages.delete(sourceKey(tab));
+        contextVersion++;
+        resetContextHistory("Source removed.");
+        renderContext();
+      }),
+    );
+    item.append(actions);
+    if (page?.selection) {
+      const selection = el("div", "source-selection");
+      selection.append(el("strong", null, entry.selectionExcluded ? "Selected text · excluded" : "Selected text · included"));
+      selection.append(el("p", null, page.selection.slice(0, 180) + (page.selection.length > 180 ? "…" : "")));
+      selection.append(el("p", "context-help", "Controls the extra highlighted excerpt, not matching text in the included page. Selected excerpts share a 6,000-character limit."));
+      selection.append(contextButton(entry.selectionExcluded ? "Include selection" : "Remove selection", () => {
+        entry.selectionExcluded = !entry.selectionExcluded;
+        resetContextHistory(entry.selectionExcluded ? "Selection excluded." : "Selection included.");
+        renderContext();
+      }));
+      item.append(selection);
+    }
+    list.append(item);
+  }
+  if (!count) list.append(el("p", "context-help", "No pages included. Add an open tab below."));
+  const add = $("addSource");
+  add.replaceChildren(new Option("Choose a tab…", ""));
+  for (const tab of state.contextTabs) {
+    if (!isWebUrl(tab.url) || state.contextPages.has(sourceKey(tab))) continue;
+    add.append(new Option(tab.title || tab.url, String(tab.id)));
+  }
+  const disabled = !!state.running || state.contextBusy || state.mode !== "ask";
+  add.disabled = disabled;
+  $("refreshSources").disabled = disabled || !count;
+  $("keepPages").disabled = disabled;
+}
+
+async function syncContext({ reread = false, refreshPinned = false } = {}) {
+  const version = ++contextVersion;
+  state.contextBusy = true;
+  renderContext();
+  try {
+    const [selected, open] = await Promise.all([
+      contextTabs(state.windowId), browser.tabs.query({ windowId: state.windowId }),
+    ]);
+    if (version !== contextVersion) return;
+    state.contextTabs = open;
+    const selectedKeys = new Set(selected.map(sourceKey));
+    for (const [key, entry] of state.contextPages) {
+      if (!entry.pinned && !state.keepPages && !selectedKeys.has(key)) state.contextPages.delete(key);
+    }
+    for (const tab of selected) {
+      if (!isWebUrl(tab.url) || state.excludedPages.has(sourceKey(tab))) continue;
+      const key = sourceKey(tab);
+      if (!state.contextPages.has(key)) {
+        state.contextPages.set(key, { tab, page: null, readAt: null, pinned: false, selectionExcluded: false });
+      }
+    }
+    const refresh = [...state.contextPages.values()].filter((entry) =>
+      !entry.page || (reread && (!entry.pinned || refreshPinned) && open.some((tab) => tab.id === entry.tab.id && tab.url === entry.tab.url)));
+    const pages = await readPages(refresh.map((entry) => entry.tab));
+    if (version !== contextVersion) return;
+    pages.forEach((page, index) => Object.assign(refresh[index], { page, readAt: Date.now() }));
+    const active = selected.find((tab) => tab.active) || selected[0];
+    $("restore").hidden = !(active && state.translated.has(active.id));
+  } catch (e) {
+    $("contextStatus").textContent = `Couldn't update context: ${e.message}`;
+  } finally {
+    if (version === contextVersion) {
+      state.contextBusy = false;
+      renderContext();
+    }
+  }
+}
+
+async function refreshSource(key) {
+  const entry = state.contextPages.get(key);
+  if (!entry || state.running || state.contextBusy) return;
+  state.contextBusy = true;
+  renderContext();
+  try {
+    const tab = await browser.tabs.get(entry.tab.id);
+    if (tab.url !== entry.tab.url) throw new Error("This tab navigated. Remove this snapshot and add the current tab.");
+    const [page] = await readPages([tab]);
+    Object.assign(entry, { page, readAt: Date.now() });
+    resetContextHistory("Source refreshed.");
+  } catch (e) {
+    $("contextStatus").textContent = `Couldn't refresh: ${e.message}`;
+  } finally {
+    state.contextBusy = false;
+    renderContext();
+  }
+}
+
 function refreshContext() {
   clearTimeout(ctxTimer);
-  ctxTimer = setTimeout(async () => {
-    const tabs = await contextTabs(state.windowId);
-    const box = $("context");
-    box.replaceChildren();
-    if (tabs.length > 1) {
-      box.append(el("b", null, `${tabs.length} tabs: `), document.createTextNode(tabs.map((t) => t.title).join(" · ")));
-    } else if (tabs[0]) {
-      box.append(el("b", null, "Page: "), document.createTextNode(tabs[0].title || tabs[0].url));
-    }
-    box.title = tabs.map((t) => t.url).join("\n");
-    const active = tabs.find((t) => t.active) || tabs[0];
-    $("restore").hidden = !(active && state.translated.has(active.id));
+  ctxTimer = setTimeout(() => {
+    if (!state.running && !state.contextBusy) syncContext({ reread: true });
   }, 120);
 }
 
@@ -555,6 +726,8 @@ async function init() {
   $("keepPages").addEventListener("change", (e) => {
     state.keepPages = e.target.checked;
     browser.storage.local.set({ askKeepPages: state.keepPages }).catch(() => {});
+    if (!state.keepPages) resetContextHistory("Earlier unpinned pages will no longer be kept.");
+    refreshContext();
   });
   showWelcome();
   refreshContext();
@@ -573,7 +746,32 @@ async function init() {
     e.target.style.height = "auto";
     e.target.style.height = Math.min(160, e.target.scrollHeight) + "px";
   });
-  for (const b of document.querySelectorAll(".modes button")) b.addEventListener("click", () => setMode(b.dataset.mode));
+  const modes = [...document.querySelectorAll(".modes button")];
+  for (const b of modes) {
+    b.addEventListener("click", () => setMode(b.dataset.mode));
+    b.addEventListener("keydown", (e) => {
+      if (!["ArrowRight", "ArrowLeft", "ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) return;
+      e.preventDefault();
+      const index = e.key === "Home" ? 0 : e.key === "End" ? modes.length - 1
+        : (modes.indexOf(b) + (["ArrowLeft", "ArrowUp"].includes(e.key) ? -1 : 1) + modes.length) % modes.length;
+      setMode(modes[index].dataset.mode);
+      modes[index].focus();
+    });
+  }
+  $("refreshSources").addEventListener("click", async () => {
+    resetContextHistory("Refreshing open sources. Snapshots whose tabs closed or navigated remain unchanged.");
+    await syncContext({ reread: true, refreshPinned: true });
+  });
+  $("contextPanel").addEventListener("toggle", () => {
+    if ($("contextPanel").open) refreshContext();
+  });
+  $("addSource").addEventListener("change", async (e) => {
+    const tab = state.contextTabs.find((tab) => tab.id === Number(e.target.value));
+    if (!tab || state.running || state.contextBusy) return;
+    state.excludedPages.delete(sourceKey(tab));
+    state.contextPages.set(sourceKey(tab), { tab, page: null, readAt: null, pinned: true, selectionExcluded: false });
+    await syncContext();
+  });
   $("summarize").addEventListener("click", () => guard(runSummarize));
   $("translate").addEventListener("click", () => guard(() => runTranslate("")));
   $("restore").addEventListener("click", runRestore);
@@ -581,6 +779,10 @@ async function init() {
   $("newChat").addEventListener("click", () => {
     state.chat.reset();
     state.sessionGrants.clear();
+    state.contextPages.clear();
+    state.excludedPages.clear();
+    $("contextStatus").textContent = "";
+    refreshContext();
     showWelcome();
   });
   $("openSettings").addEventListener("click", () => browser.runtime.openOptionsPage());

@@ -9,72 +9,95 @@
 <body>
   <main>
     <h1>PageMortem settings</h1>
+    <p class="intro">Changes apply only after you choose Save settings. Tests use the values currently shown without saving them.</p>
 
-    <section>
-      <h2>Model server</h2>
+    <section aria-labelledby="connectionHeading">
+      <h2 id="connectionHeading">Connection</h2>
       <label>Endpoint (OpenAI-compatible base URL)
-        <input id="endpoint" type="url" placeholder="http://192.168.1.50:8080/v1" spellcheck="false">
+        <input id="endpoint" type="url" placeholder="http://192.168.1.50:8080/v1" spellcheck="false" aria-describedby="lockStatus">
       </label>
-      <p class="hint" id="lockStatus"></p>
+      <p class="hint" id="lockStatus" role="status"></p>
       <label>API key <span class="opt">(optional)</span>
         <input id="apiKey" type="password" autocomplete="off" spellcheck="false">
       </label>
+      <div class="actions">
+        <button id="test" type="button" aria-describedby="testResult">Test connection</button>
+        <span id="testResult" class="result" role="status" aria-live="polite" aria-atomic="true"></span>
+      </div>
+    </section>
+
+    <section aria-labelledby="modelsHeading">
+      <h2 id="modelsHeading">Models and capabilities</h2>
       <div class="row2">
-        <label>Model <span class="opt">(blank = first listed)</span>
+        <label>Main model <span class="opt">(blank = first listed)</span>
           <input id="model" list="models" spellcheck="false">
         </label>
-        <label>Vision model <span class="opt">(blank = same model)</span>
-          <input id="visionModel" list="models" spellcheck="false">
+        <label>Vision model <span class="opt">(blank = main model)</span>
+          <input id="visionModel" list="models" spellcheck="false" aria-describedby="visionHint">
         </label>
       </div>
       <datalist id="models"></datalist>
-      <p class="hint">If your main model is text-only (for example Qwen3-Next), set a vision model such as Qwen3-VL; PageMortem then asks it about screenshots. Leave it blank if the main model accepts images.</p>
-      <div class="actions">
-        <button id="test" type="button">Test connection</button>
-        <span id="testResult" class="result" role="status"></span>
-      </div>
-    </section>
-
-    <section>
-      <h2>Model behaviour</h2>
-      <div class="row2">
-        <label>Tool calling
-          <select id="toolMode">
-            <option value="native">Native (OpenAI tool calls)</option>
-            <option value="json">JSON in text (fallback)</option>
-          </select>
-        </label>
-        <label>Default translation language
-          <input id="language" spellcheck="false">
-        </label>
-      </div>
-      <p class="hint">Use “JSON in text” if Agent mode stalls or the server returns tool calls as plain text.</p>
+      <p class="hint" id="visionHint">Screenshots use the vision model when set. Model names alone do not establish image or tool support.</p>
+      <label>Tool calling
+        <select id="toolMode" aria-describedby="toolHint">
+          <option value="native">Native (OpenAI tool calls)</option>
+          <option value="json">JSON in text (fallback)</option>
+        </select>
+      </label>
+      <p class="hint" id="toolHint">Use JSON in text if your server does not return native tool calls. The Tools check tests the selected mode without executing any browser action.</p>
+      <fieldset class="capabilities" aria-describedby="probeHint">
+        <legend>Capability checks</legend>
+        <p id="probeHint" class="hint">Each check sends a small request to your configured server and may incur usage. A pass confirms only this finite probe, not reliable support for every task. No page content is sent.</p>
+        <div class="probe">
+          <button id="checkText" type="button" aria-describedby="textResult">Check Text</button>
+          <span id="textResult" class="result" role="status" aria-live="polite" aria-atomic="true">Not checked. Tests a short main-model answer.</span>
+        </div>
+        <div class="probe">
+          <button id="checkTools" type="button" aria-describedby="toolsResult">Check Tools</button>
+          <span id="toolsResult" class="result" role="status" aria-live="polite" aria-atomic="true">Not checked. Inspects a returned call and its arguments.</span>
+        </div>
+        <div class="probe">
+          <button id="checkVision" type="button" aria-describedby="visionResult">Check Vision</button>
+          <span id="visionResult" class="result" role="status" aria-live="polite" aria-atomic="true">Not checked. Sends a generated image and checks its colors.</span>
+        </div>
+      </fieldset>
+      <label>Default translation language
+        <input id="language" spellcheck="false">
+      </label>
       <label class="check"><input id="showStats" type="checkbox"> Show speed and token counts under each reply</label>
-      <label class="check"><input id="disableThinking" type="checkbox"> Turn off thinking (sends <code>enable_thinking: false</code>; faster on Qwen3 thinking models)</label>
-      <div class="row3">
-        <label>Temperature <input id="temperature" type="number" min="0" max="2" step="0.1"></label>
-        <label>Max reply tokens <input id="maxTokens" type="number" min="256" step="256"></label>
-        <label>Max page characters <input id="maxPageChars" type="number" min="2000" step="1000"></label>
-      </div>
-      <p class="hint">Page text sent per request. ~4 characters ≈ 1 token; keep it well under your server's context size.</p>
     </section>
 
-    <section>
-      <h2>Agent safety</h2>
+    <section aria-labelledby="safetyHeading">
+      <h2 id="safetyHeading">Safety</h2>
       <label class="check"><input id="stayOnSite" type="checkbox"> Ask before going to a different site than the one I started on</label>
       <label class="check"><input id="confirmAll" type="checkbox"> Ask before every click (not just risky ones)</label>
       <label class="check"><input id="closeAgentTabs" type="checkbox"> Close tabs the agent opened when it finishes</label>
-      <div class="row3">
-        <label>Max agent steps <input id="maxSteps" type="number" min="3" max="60"></label>
-        <label>Screenshot width (px) <input id="screenshotWidth" type="number" min="512" max="2560" step="64"></label>
-        <label>Parallel translation requests <input id="translateConcurrency" type="number" min="1" max="8"></label>
-      </div>
-      <p class="hint">Always asks before typing into fields, submitting forms, downloads and buttons like Buy, Delete or Send. Password, payment and ID fields are never filled.</p>
+      <label>Max agent steps <input id="maxSteps" type="number" min="3" max="60"></label>
+      <p class="hint safety-note">PageMortem asks before typing into fields, submitting forms, downloads and recognized risky buttons such as Buy, Delete or Send. Password, payment and ID fields are never filled. These checks cannot predict every website: even an ordinary click can trigger site scripts with side effects. Enable “Ask before every click” for more control; approval does not make an action risk-free.</p>
     </section>
+
+    <details class="advanced">
+      <summary>Advanced</summary>
+      <div class="advanced-content">
+        <h2>Generation and context</h2>
+        <label class="check"><input id="disableThinking" type="checkbox"> Turn off thinking (sends <code>enable_thinking: false</code> to compatible servers)</label>
+        <div class="row3">
+          <label>Temperature <input id="temperature" type="number" min="0" max="2" step="0.1"></label>
+          <label>Max reply tokens <input id="maxTokens" type="number" min="256" step="256"></label>
+          <label>Max page characters <input id="maxPageChars" type="number" min="2000" step="1000" aria-describedby="contextHint"></label>
+        </div>
+        <p class="hint" id="contextHint">Page text sent per request. About 4 characters ≈ 1 token; leave room for instructions, history and replies within your server's context size.</p>
+        <h2>Translation and screenshots</h2>
+        <div class="row2">
+          <label>Parallel translation requests <input id="translateConcurrency" type="number" min="1" max="8"></label>
+          <label>Screenshot width (px) <input id="screenshotWidth" type="number" min="512" max="2560" step="64"></label>
+        </div>
+      </div>
+    </details>
 
     <div class="actions sticky">
       <button id="save" type="button" class="primary">Save settings</button>
-      <span id="saveResult" class="result" role="status"></span>
+      <span id="saveResult" class="result" role="status" aria-live="polite" aria-atomic="true"></span>
     </div>
   </main>
   <script src="../lib/settings.js"></script>

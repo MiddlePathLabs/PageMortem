@@ -25,12 +25,23 @@
     <div class="banner-actions" id="bannerActions"></div>
   </div>
 
-  <div class="ctxrow">
-    <div class="context" id="context" title="What PageMortem will read"></div>
-    <label class="keep" id="keepWrap" title="Off: asking on a different page starts a fresh conversation. On: earlier pages stay in the conversation, so you can compare them (uses more of the model's context).">
-      <input type="checkbox" id="keepPages"> Keep earlier pages
-    </label>
-  </div>
+  <details class="context-panel" id="contextPanel">
+    <summary id="context">Context · current page</summary>
+    <div class="context-body">
+      <p class="context-help" id="contextHelp">Ask uses the pages below. Removing a source resets model conversation history, including earlier answers.</p>
+      <label class="keep" id="keepWrap">
+        <input type="checkbox" id="keepPages"> Keep earlier pages
+      </label>
+      <div id="contextList"></div>
+      <div class="context-actions">
+        <button class="btn" id="refreshSources">Refresh context</button>
+        <label class="add-source">Add an open tab
+          <select id="addSource"><option value="">Choose a tab…</option></select>
+        </label>
+      </div>
+      <p id="contextStatus" class="context-help" role="status"></p>
+    </div>
+  </details>
 
   <div class="quick">
     <button id="summarize" class="chip">Summarize</button>
@@ -45,10 +56,11 @@
 
   <footer class="composer">
     <button class="jump" id="jump" hidden aria-label="Scroll to the latest message">↓ Latest</button>
-    <div class="modes" role="radiogroup" aria-label="Mode">
-      <button role="radio" data-mode="ask" aria-checked="true" title="Answer from the current page(s)">Ask</button>
-      <button role="radio" data-mode="agent" aria-checked="false" title="Let PageMortem click through pages to finish a task">Agent</button>
+    <div class="modes" role="radiogroup" aria-label="Mode" aria-describedby="modeHelp">
+      <button role="radio" data-mode="ask" aria-checked="true" tabindex="0">Ask</button>
+      <button role="radio" data-mode="agent" aria-checked="false" tabindex="-1">Agent</button>
     </div>
+    <p class="mode-help" id="modeHelp">Reads the included pages. Does not interact with websites.</p>
     <div class="inputrow">
       <textarea id="input" rows="2" placeholder="Ask about this page…" aria-label="Message"></textarea>
       <button id="send" class="primary" aria-label="Send">Send</button>

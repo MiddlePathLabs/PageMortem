@@ -24,7 +24,7 @@ For quick iteration you can instead load `build/manifest.json` from `about:debug
 
 ## Using it
 
-- **Ask** answers from the current tab. To compare pages, select several tabs first (Ctrl+click or Shift+click the tabs). Selected text on the page is included automatically. Asking on a different page starts a fresh conversation; turn on **Keep earlier pages** (next to the page name) to keep earlier pages in it for comparisons.
+- **Ask** answers from the included pages. To compare pages, select several tabs first (Ctrl+click or Shift+click the tabs), or add an open tab through **Context**. Selected text is included automatically unless excluded there. Turn on **Keep earlier pages** inside Context to retain pages as you browse; otherwise only the current selection of tabs and pinned snapshots remain.
 - **Summarize** works on the page, or on the selection if one exists. Long pages are summarized in parts.
 - **Translate** translates the selection into the sidebar. With no selection it translates the whole page in place, and **Show original** reverts it.
 - **Agent** reads the page, searches long pages for text, opens links in background tabs, clicks, presses keys, scrolls, waits for slow pages to load, looks at screenshots (images get numbered labels) and highlights what it finds. Search sees only what reading the page does (never password or payment field values, nothing hidden). A highlight outlines the whole row when the match is in a table, follows the page as you scroll, and stays for 30 seconds; press Esc or click the page to clear it. It asks before anything risky and closes the tabs it opened when it's done.
@@ -33,6 +33,26 @@ For quick iteration you can instead load `build/manifest.json` from `about:debug
 - The right-click menu has Translate, Summarize and Ask entries.
 - Each reply ends with its speed and size (tokens per second, tokens in and out, cached prompt tokens). Hover for time to first token, prompt speed and speculative-draft acceptance. Numbers come from the server when it reports them (llama.cpp-style `timings`, or `usage`); otherwise they are estimated and marked `~`. Turn this off in Settings.
 - When an agent click is flagged only because of its label (for example “Close”), the card also offers **Always allow “Close” on this site**. That choice lasts until you start a new conversation or close the sidebar, and covers only that exact label on that site. It is never offered for purchases, deletions, messages, account or permission actions, form submissions, downloads or risky link addresses.
+
+### Context and modes
+
+Expand **Context** to inspect Ask's sources, URLs, read times, selected excerpts, and the character budget used for each page. Truncated sources are marked. Unpinned open sources are reread before each Ask request.
+
+- **Pin snapshot** keeps that copy of a page through navigation. **Add an open tab** adds it as a pinned snapshot.
+- **Refresh** updates one source; **Refresh context** updates included sources whose tabs are still open at the same address, including pinned ones. Closed or navigated-away snapshots remain unchanged.
+- **Remove** excludes a page from future Ask requests. **Remove selection** excludes the extra highlighted excerpt, not matching text in the included page. Selected excerpts share a 6,000-character limit.
+- Removing a source or changing selection inclusion clears model conversation history, including earlier answers, so removed information is not retained there. Existing messages stay visible in the sidebar. Manual refresh also clears model history.
+- **New conversation** clears the source overrides and remembered approvals, then includes the currently selected tabs again.
+
+**Ask** reads the included pages without interacting with websites. **Agent** starts on the active tab and can use Firefox-selected tabs; Ask's source list does not restrict its navigation. The mode description stays above the message box. Use arrow keys, Home, or End to change modes when a mode button has focus.
+
+Approval cards identify the site, target and available action details, with buttons such as **Submit form**, **Type text** or **Start watch**. Form approvals explicitly warn when submitted values cannot safely be enumerated. Detected consequential actions still require individual approval; ordinary controls can also trigger site-script side effects.
+
+### Settings and capability checks
+
+Settings are grouped into **Connection**, **Models and capabilities**, **Safety**, and a collapsed **Advanced** section for generation, context, translation concurrency and screenshot tuning.
+
+**Check Text**, **Check Tools**, and **Check Vision** send separate diagnostic requests using the displayed settings without saving them or sending page content. Tools checks validate a returned call and its argument in the selected native or JSON-in-text mode; no browser tool is executed. Vision checks send a generated two-color image to the vision model, or the main model if no override is set. A pass confirms only that small probe, not reliable behavior for every task; a failed probe does not establish that the capability is unsupported. Choose **Save settings** to apply changes. The packaged network lock remains unchanged.
 
 ## What "local only" means here
 
