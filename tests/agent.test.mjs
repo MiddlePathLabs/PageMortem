@@ -539,3 +539,17 @@ test("go_to asks before an address that looks like it changes something", async 
   assert.equal(ui.cards.length, 1);
   assert.equal(web.tabs.get(1).url, SHOP);
 });
+
+test("go_to asks before a same-site address with a query or on another origin", async () => {
+  for (const url of [`${SHOP}search?q=secret`, "https://sub.shop.example/x"]) {
+    const { run, ui, web } = setup({
+      sites: { [SHOP]: page("Shop", "home"), [url]: page("X", "x") },
+      replies: [call("go_to", { url }), answer("ok")],
+      decide: () => "no",
+    });
+    await run();
+    assert.equal(ui.cards.length, 1, url);
+    assert.match(ui.cards[0].title, /Open this address/, url);
+    assert.equal(web.tabs.get(1).url, SHOP, url);
+  }
+});
