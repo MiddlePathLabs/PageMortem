@@ -188,13 +188,24 @@ function attachEvidence(body, sources) {
     }
     list.forEach(render);
     if (!ask.length) return;
+    // A reranker settles most of these locally; only what it can't place goes to the model.
+    const model = state.settings?.rerankModel;
+    const ranked = model ? await rerankEvidence({ claims: ask.map((c) => c.text), evidence, llm: state.llm, model }).catch(() => []) : [];
+    const rest = ask.filter((claim, i) => {
+      if (!ranked[i]) return true;
+      claim.pending = false;
+      claim.result = { ...ranked[i], kind: "match" };
+      if (claim.panel.isConnected) render(claim);
+      return false;
+    });
+    if (!rest.length) return;
     let found = [], failure = null;
     try {
-      found = await modelEvidence({ claims: ask.map((c) => c.text), evidence, llm: state.llm });
+      found = await modelEvidence({ claims: rest.map((c) => c.text), evidence, llm: state.llm });
     } catch (e) {
       failure = e;
     }
-    ask.forEach((claim, i) => {
+    rest.forEach((claim, i) => {
       claim.pending = false;
       const fallback = claim.local?.score >= WEAK_MATCH ? { ...claim.local, kind: "weak" } : null;
       if (found[i]) claim.result = { ...found[i], kind: "match" };
@@ -857,8 +868,10 @@ async function runAsk(question) {
       bot.stream("");
       reply = await ask(null);
     }
-    const { answer, fresh } = reply;
+    const { answer, fresh, reranked, rerankError } = reply;
     if (fresh) bot.note("Included pages changed, so this answer starts a fresh model conversation.");
+    if (rerankError) bot.note(`The reranker failed (${rerankError.message}), so long pages were cut at the end instead.`);
+    else if (reranked) bot.note(`${reranked === 1 ? "The page was" : `${reranked} pages were`} too long to send whole, so the parts most relevant to the question were sent.`);
     bot.evidence(state.chat.citations);
     bot.set(answer);
   } catch (e) {
@@ -1285,7 +1298,7 @@ function renderContext() {
     const sent = Math.min(page?.text?.length || 0, perPage);
     const time = readAt ? new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit", second: "2-digit" }).format(readAt) : "";
     item.append(el("p", "context-help", !page ? "Reading…" : page.error ? `Unreadable: ${page.error}` :
-      `Read ${time} · ${sent.toLocaleString()} of ${length.toLocaleString()} characters${sent < length ? " · truncated" : " · full extracted text"}${pinned ? " · pinned snapshot" : ""}`));
+      `Read ${time} · ${sent.toLocaleString()} of ${length.toLocaleString()} characters${sent >= length ? " · full extracted text" : state.settings?.rerankModel ? " · the parts most relevant to each question" : " · truncated"}${pinned ? " · pinned snapshot" : ""}`));
     const actions = el("div", "source-actions");
     actions.append(
       contextButton("Refresh", () => refreshSource(sourceKey(tab))),

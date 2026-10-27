@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const TEXT = ["endpoint", "apiKey", "model", "visionModel", "language", "toolMode", "thinking"];
+const TEXT = ["endpoint", "apiKey", "model", "visionModel", "rerankModel", "language", "toolMode", "thinking"];
 const NUM = ["temperature", "maxTokens", "maxPageChars", "maxSteps", "screenshotWidth", "translateConcurrency"];
 const BOOL = ["showStats", "stayOnSite", "confirmAll", "closeAgentTabs"];
 
@@ -133,6 +133,16 @@ async function checkTools(llm, s) {
     throw new Error(`Tools probe did not pass for ${model} in ${mode} mode: no matching returned call with the expected token. Check the server's tool template or try the other tool mode. This does not prove tools are unsupported.`);
   }
   return `Tools probe passed for ${model}: inspected a ${mode} call with the expected argument. No tool was executed; this does not guarantee reliable agent behavior.`;
+}
+
+async function checkRerank(llm, s) {
+  if (!s.rerankModel) throw new Error("Set a rerank model first. Without one, long pages are cut at the end and Sources asks the main model.");
+  const docs = ["The battery lasts about 14 hours on a single charge.", "It is sold in silver and black.", "Shipping is free on orders over $50."];
+  const scores = await llm.rerank({ model: s.rerankModel, query: "How long does the battery last?", documents: docs });
+  if (!(scores[0] > scores[1] && scores[0] > scores[2])) {
+    throw new Error(`Rerank probe did not pass for ${s.rerankModel}: the matching passage did not score highest. Check that the server serves it on /rerank. This does not prove reranking is unsupported.`);
+  }
+  return `Rerank probe passed for ${s.rerankModel}: ranked the matching passage first of three (score ${scores[0].toFixed(2)}). One small test is not a guarantee for every page.`;
 }
 
 function visionProbeImage() {
@@ -471,6 +481,7 @@ async function init() {
   $("checkText").addEventListener("click", () => runCheck("checkText", "textResult", checkText));
   $("checkTools").addEventListener("click", () => runCheck("checkTools", "toolsResult", checkTools));
   $("checkVision").addEventListener("click", () => runCheck("checkVision", "visionResult", checkVision));
+  $("checkRerank").addEventListener("click", () => runCheck("checkRerank", "rerankResult", checkRerank));
   $("checkThinking").addEventListener("click", () => runCheck("checkThinking", "thinkingResult", checkThinking));
   $("save").addEventListener("click", async () => {
     $("save").disabled = true;

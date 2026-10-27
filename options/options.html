@@ -38,6 +38,10 @@
       </div>
       <datalist id="models"></datalist>
       <p class="hint" id="visionHint">Screenshots use the vision model when set. Model names alone do not establish image or tool support.</p>
+      <label>Rerank model <span class="opt">(blank = none)</span>
+        <input id="rerankModel" list="models" spellcheck="false" aria-describedby="rerankHint">
+      </label>
+      <p class="hint" id="rerankHint">A reranker such as Qwen3-Reranker, served on <code>/rerank</code>. Ask then sends the parts of a long page most relevant to the question instead of cutting it at the end, and Sources finds reworded points without asking the main model.</p>
       <label>Tool calling
         <select id="toolMode" aria-describedby="toolHint">
           <option value="native">Native (OpenAI tool calls)</option>
@@ -59,6 +63,10 @@
         <div class="probe">
           <button id="checkVision" type="button" aria-describedby="visionResult">Check Vision</button>
           <span id="visionResult" class="result" role="status" aria-live="polite" aria-atomic="true">Not checked. Sends a generated image and checks its colors.</span>
+        </div>
+        <div class="probe">
+          <button id="checkRerank" type="button" aria-describedby="rerankResult">Check Rerank</button>
+          <span id="rerankResult" class="result" role="status" aria-live="polite" aria-atomic="true">Not checked. Ranks three short passages against a question.</span>
         </div>
       </fieldset>
       <label>Default translation language

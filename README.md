@@ -21,6 +21,7 @@ For quick iteration you can instead load `build/manifest.json` from `about:debug
 
 - **llama.cpp `llama-server`:** start it with `--jinja` so tool calls work. Add `--mmproj` for a vision model. Use `--host 0.0.0.0` so other LAN machines can reach it.
 - **vLLM:** use `--enable-auto-tool-choice --tool-call-parser hermes` for Qwen models.
+- **Reranker (optional).** Put a reranker such as Qwen3-Reranker in **Settings → Rerank model** if your server serves one on `/rerank` (vLLM, llama.cpp with `--reranking`, Infinity). When a page is too long to send whole, Ask then sends its start plus the passages most relevant to the question, instead of cutting it at the end, and Sources places reworded points without asking the main model. Use **Check Rerank** to test it.
 - **Qwen3-Next is text-only.** For image tasks, run a Qwen3-VL model too and put its name in **Settings → Vision model**. If your main model accepts images, leave that field blank.
 - If Agent mode stalls, or tool calls show up as plain text, switch **Tool calling** to *JSON in text*.
 
@@ -44,7 +45,7 @@ Agent's `open_link` accepts up to five links per call and loads and reads up to 
 
 ### Sources
 
-**Ask and Summarize** answers are plain text; the model isn't asked for citations. Sources appear only when you ask for them. Hover a paragraph or bullet and click **source**, or select part of an answer and click **Show sources**. PageMortem matches each point to the page sentence it most likely came from, on your computer, using the page text the answer was based on. Only points without a clear match go to the model, which is shown the nearest passages and asked for the exact supporting sentence. A sentence the model gives is used only if it appears word for word in the page text. Otherwise the closest weak match is shown, or **Not found on the page** when nothing matches. A match is not proof that the passage supports the point; check the surrounding context.
+**Ask and Summarize** answers are plain text; the model isn't asked for citations. Sources appear only when you ask for them. Hover a paragraph or bullet and click **source**, or select part of an answer and click **Show sources**. PageMortem matches each point to the page sentence it most likely came from, on your computer, using the page text the answer was based on. With a rerank model set, the reranker judges the likeliest sentences for each remaining point first (every sentence on a short page), which places most reworded points without a model call. Only points still without a clear match go to the model, which is shown the nearest passages and asked for the exact supporting sentence. A sentence the model gives is used only if it appears word for word in the page text. Otherwise the closest weak match is shown, or **Not found on the page** when nothing matches. A match is not proof that the passage supports the point; check the surrounding context.
 
 **Agent** answers carry inline passage citations. Select a numbered citation to jump to the passage in its source tab. Citations are listed once per source page under **Sources** below the answer. Quotes must match the source text sent to the model, allowing whitespace differences only. Unknown sources and mismatched quotes are listed as **Unverified**, without a Show on page action.
 
@@ -54,7 +55,7 @@ The quoted snapshot stays with the reply. Show on page reports closed or navigat
 
 ### Context and modes
 
-Expand **Context** to inspect Ask's sources, URLs, read times, selected excerpts, and the character budget used for each page. Truncated sources are marked. Unpinned open sources are reread before each Ask request.
+Expand **Context** to inspect Ask's sources, URLs, read times, selected excerpts, and the character budget used for each page. Truncated sources are marked. With a rerank model set, a page too long to send whole is cut differently for each question: its start plus the passages most relevant to the question (and the one before it), and a note under the answer says so. A follow-up that needs other passages sends the page again. Unpinned open sources are reread before each Ask request.
 
 - **Pin snapshot** keeps that copy of a page through navigation. **Add an open tab** adds it as a pinned snapshot.
 - **Refresh** updates one source; **Refresh context** updates included sources whose tabs are still open at the same address, including pinned ones. Closed or navigated-away snapshots remain unchanged.
