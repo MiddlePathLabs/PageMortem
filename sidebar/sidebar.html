@@ -69,8 +69,10 @@
       <button role="radio" data-mode="agent" aria-checked="false" tabindex="-1">Agent</button>
     </div>
     <p class="mode-help" id="modeHelp">Reads the included pages. Does not interact with websites.</p>
+    <p id="composerError" class="composer-error" role="status" hidden></p>
+    <div id="skillMenu" class="skill-menu" hidden role="listbox" aria-label="Skills"></div>
     <div class="inputrow">
-      <textarea id="input" rows="2" placeholder="Ask about this page…" aria-label="Message"></textarea>
+      <textarea id="input" rows="2" placeholder="Ask about this page, or @skill…" aria-label="Message" aria-autocomplete="list" aria-controls="skillMenu" aria-expanded="false"></textarea>
       <button id="send" class="primary" aria-label="Send">Send</button>
     </div>
   </footer>
@@ -83,6 +85,7 @@
   <script src="../lib/chat.js"></script>
   <script src="../lib/threads.js"></script>
   <script src="../lib/evidence.js"></script>
+  <script src="../lib/skills.js"></script>
   <script src="../lib/agent.js"></script>
   <script src="../lib/groups.js"></script>
   <script src="sidebar.js"></script>

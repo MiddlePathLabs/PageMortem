@@ -28,7 +28,7 @@ export function load(files, extra = {}) {
   return ctx;
 }
 
-export const AGENT_FILES = ["lib/settings.js", "lib/llm.js", "lib/tabs.js", "lib/save.js", "lib/markdown.js", "lib/agent.js"];
+export const AGENT_FILES = ["lib/settings.js", "lib/llm.js", "lib/tabs.js", "lib/save.js", "lib/markdown.js", "lib/skills.js", "lib/agent.js"];
 
 /**
  * A fake web. `sites[url]` describes a page: { title, text, elements: { [id]: info & { onClick?(tab, web) } },

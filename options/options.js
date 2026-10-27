@@ -185,8 +185,243 @@ async function checkThinking(llm) {
   return `${model}: ${names || "no levels"} (${how}).${off} Save settings to keep this list.`;
 }
 
+let skills = [];
+let editing = null;
+let draftFiles = [];
+
+function skillResult(text, ok = null) {
+  result("skillResult", text, ok);
+}
+
+function syncSkillFields() {
+  const agent = $("skillKind").value === "agent";
+  $("skillNeeds").disabled = agent;
+  $("skillOutput").disabled = agent;
+  const slug = skillSlug($("skillName").value);
+  $("skillSlug").textContent = slug ? `Used as @${slug}` : "";
+}
+
+function clearSkillForm() {
+  editing = null;
+  $("skillName").value = "";
+  $("skillDescription").value = "";
+  $("skillKind").value = "prompt";
+  $("skillNeeds").value = "none";
+  $("skillOutput").value = "markdown";
+  $("skillBody").value = "";
+  draftFiles = [];
+  renderDraftFiles();
+  $("skillAdd").textContent = "Add skill";
+  $("skillCancel").hidden = true;
+  syncSkillFields();
+}
+
+function fillSkillForm(skill) {
+  $("skillName").value = skill.name;
+  $("skillDescription").value = skill.description;
+  $("skillKind").value = skill.kind;
+  $("skillNeeds").value = skill.needs;
+  $("skillOutput").value = skill.output;
+  $("skillBody").value = skill.body;
+  draftFiles = skill.files ? skill.files.map((file) => ({ ...file })) : [];
+  renderDraftFiles();
+  $("skillAdd").textContent = "Save skill";
+  $("skillCancel").hidden = false;
+  syncSkillFields();
+  $("skillName").focus();
+}
+
+function renderSkills() {
+  const list = $("skillList");
+  list.replaceChildren(...skills.map((s) => {
+    const li = document.createElement("li");
+    const title = document.createElement("div");
+    title.textContent = `@${s.name}`;
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    const kind = s.kind === "agent" ? "Agent" : "Prompt";
+    const extra = s.kind === "agent" ? "" : ` · ${s.needs === "none" ? "no extra context" : s.needs} · ${s.output}`;
+    const count = s.files?.length ? ` · ${s.files.length} file${s.files.length === 1 ? "" : "s"}` : "";
+    meta.textContent = `${kind}${extra}${count}${s.description ? ` — ${s.description}` : ""}`;
+    const row = document.createElement("div");
+    row.className = "row";
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.textContent = "Edit";
+    edit.addEventListener("click", () => {
+      editing = s.name;
+      fillSkillForm(s);
+      skillResult("");
+    });
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "danger";
+    remove.textContent = "Remove";
+    remove.addEventListener("click", async () => {
+      if (!confirm(`Remove @${s.name}?`)) return;
+      try {
+        skills = await removeSkill(s.name);
+        if (editing === s.name) clearSkillForm();
+        renderSkills();
+        skillResult(`Removed @${s.name}.`, true);
+      } catch (e) {
+        skillResult(e.message, false);
+      }
+    });
+    row.append(edit, remove);
+    li.append(title, meta, row);
+    return li;
+  }));
+  $("skillEmpty").hidden = skills.length > 0;
+}
+
+async function commitSkill() {
+  const parsed = normalizeSkill({
+    name: $("skillName").value,
+    description: $("skillDescription").value,
+    kind: $("skillKind").value,
+    needs: $("skillNeeds").value,
+    output: $("skillOutput").value,
+    body: $("skillBody").value,
+    files: draftFiles,
+  });
+  if (parsed.error) return skillResult(parsed.error, false);
+  $("skillAdd").disabled = true;
+  try {
+    skills = await putSkill(parsed.skill, editing);
+    clearSkillForm();
+    renderSkills();
+    skillResult(`Saved @${parsed.skill.name}.`, true);
+  } catch (e) {
+    skillResult(e.message, false);
+  } finally {
+    $("skillAdd").disabled = false;
+  }
+}
+
+function renderDraftFiles() {
+  const list = $("skillFiles");
+  list.replaceChildren(...draftFiles.map((file) => {
+    const li = document.createElement("li");
+    const name = document.createElement("code");
+    name.textContent = file.path;
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.textContent = "Remove";
+    remove.addEventListener("click", () => {
+      draftFiles = draftFiles.filter((item) => item.path !== file.path);
+      renderDraftFiles();
+    });
+    li.append(name, remove);
+    return li;
+  }));
+}
+
+function readDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result));
+    r.onerror = () => reject(r.error);
+    r.readAsDataURL(file);
+  });
+}
+
+async function readImported(file) {
+  const path = file.webkitRelativePath || file.name;
+  if (file.size > 1500000) return { path, skip: "too large" };
+  if (/^image\/(png|jpeg|gif|webp)$/.test(file.type)) {
+    const image = await readDataUrl(file);
+    if (image.length > SKILL_LIMITS.image) return { path, skip: "image too large" };
+    return { path, image };
+  }
+  const text = await file.text();
+  if (text.includes("\0")) return { path, skip: "not text" };
+  return { path, text };
+}
+
+function showImported(parsed) {
+  if (parsed.error) return skillResult(parsed.error, false);
+  const existing = skills.find((s) => s.name === parsed.skill.name);
+  editing = existing ? existing.name : null;
+  fillSkillForm(parsed.skill);
+  const n = parsed.skill.files?.length || 0;
+  const skipped = parsed.skipped?.length ? ` Skipped: ${parsed.skipped.join("; ")}.` : "";
+  const lead = existing ? `Review @${parsed.skill.name}, then save to replace it.` : "Review the skill, then add it.";
+  skillResult(`${lead}${n ? ` ${n} supporting file${n === 1 ? "" : "s"}.` : ""}${skipped}`, true);
+}
+
+async function importSkillFiles(fileList, { folder = false } = {}) {
+  const entries = [];
+  for (const file of fileList) entries.push(await readImported(file));
+  if (!folder && entries.length === 1 && entries[0].text != null && !entries[0].skip) {
+    return showImported(parseSkillFile(entries[0].text, entries[0].path));
+  }
+  const skipped = entries.filter((e) => e.skip);
+  if (!folder && skipped.length && entries.length === skipped.length) return skillResult(skipped.map((e) => `${e.path}: ${e.skip}`).join("; "), false);
+  showImported(parseSkillBundle(entries));
+}
+
+async function addDraftFiles(fileList) {
+  const entries = [];
+  for (const file of fileList) entries.push(await readImported(file));
+  const skipped = entries.filter((e) => e.skip).map((e) => `${e.path}: ${e.skip}`);
+  const incoming = normalizeFiles(entries.filter((e) => !e.skip), { lenient: true });
+  if (incoming.error) return skillResult(incoming.error, false);
+  // Existing files come first, so the limits leave out what was just picked, not what the skill already had.
+  const byPath = new Map(draftFiles.map((file) => [file.path.toLowerCase(), file]));
+  for (const file of incoming.files) byPath.set(file.path.toLowerCase(), file);
+  const total = $("skillKind").value === "prompt" ? SKILL_LIMITS.promptFiles : SKILL_LIMITS.agentFiles;
+  const merged = normalizeFiles([...byPath.values()], { total, lenient: true });
+  if (merged.error) return skillResult(merged.error, false);
+  skipped.push(...incoming.skipped, ...merged.skipped);
+  draftFiles = merged.files;
+  renderDraftFiles();
+  skillResult(skipped.length ? `Added files. Skipped: ${skipped.join("; ")}.` : "Added files. Save the skill to keep them.", true);
+}
+
+async function importPicked(input, folder) {
+  const list = [...(input.files || [])];
+  input.value = "";
+  if (!list.length) return;
+  try {
+    await importSkillFiles(list, { folder });
+  } catch (e) {
+    skillResult(e.message, false);
+  }
+}
+
+async function bindSkills() {
+  skills = await loadSkills();
+  renderSkills();
+  clearSkillForm();
+  $("skillName").addEventListener("input", syncSkillFields);
+  $("skillKind").addEventListener("change", syncSkillFields);
+  $("skillAdd").addEventListener("click", commitSkill);
+  $("skillCancel").addEventListener("click", () => {
+    clearSkillForm();
+    skillResult("");
+  });
+  $("skillImport").addEventListener("click", () => $("skillFile").click());
+  $("skillFolder").addEventListener("click", () => $("skillDir").click());
+  $("skillAddFiles").addEventListener("click", () => $("skillExtra").click());
+  $("skillFile").addEventListener("change", () => importPicked($("skillFile"), false));
+  $("skillDir").addEventListener("change", () => importPicked($("skillDir"), true));
+  $("skillExtra").addEventListener("change", async () => {
+    const list = [...($("skillExtra").files || [])];
+    $("skillExtra").value = "";
+    if (!list.length) return;
+    try {
+      await addDraftFiles(list);
+    } catch (e) {
+      skillResult(e.message, false);
+    }
+  });
+}
+
+
 async function init() {
   fill(await loadSettings());
+  await bindSkills();
   showLock();
   $("endpoint").addEventListener("input", showLock);
   $("test").addEventListener("click", () => runCheck("test", "testResult", testConnection));

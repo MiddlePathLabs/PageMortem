@@ -12,6 +12,7 @@ const el = (tag, cls, text) => {
 const state = {
   settings: null,
   llm: null,
+  skills: [],
   windowId: null,
   mode: "ask",
   running: null, // { stop() }
@@ -68,7 +69,7 @@ function showWelcome() {
   const w = el("div", "welcome");
   w.append(
     el("h2", null, "Ask, summarize, translate, or delegate."),
-    el("p", null, "Ask answers from the page you're on. Select several tabs (Ctrl+click their tabs) to compare them. Agent can click through pages to finish a task, and asks before anything risky."),
+    el("p", null, "Ask answers from the page you're on. Select several tabs (Ctrl+click their tabs) to compare them. Agent can click through pages to finish a task, and asks before anything risky. Type @ and a skill name to use a skill saved in Settings."),
   );
   const ex = el("div", "examples");
   const examples = [
@@ -358,10 +359,10 @@ function renderCitedAnswer(body, text, links, sources, final) {
 }
 
 /** replay: draw a stored reply (replayBot) without recording it again. */
-function addBot({ agent = false, replay = false } = {}) {
+function addBot({ agent = false, replay = false, raw = false } = {}) {
   log.querySelector(".welcome")?.remove();
   // What happens to the reply, as [method, ...args], so it can be drawn again after the sidebar reopens.
-  const entry = replay ? null : record({ kind: "bot", agent, ops: [], done: false });
+  const entry = replay ? null : record({ kind: "bot", agent, raw, ops: [], done: false });
   const op = (...args) => {
     if (!entry) return args;
     entry.ops.push(args);
@@ -389,6 +390,11 @@ function addBot({ agent = false, replay = false } = {}) {
   // Model text is escaped, parsed inertly and allowlist-filtered. Links work only to pages the answer came from.
   let links = new Set();
   let sources = null, evidenceSources = null;
+  const showRaw = (text) => {
+    const pre = el("pre", "skill-out");
+    pre.textContent = text;
+    body.replaceChildren(pre);
+  };
   const show = (md, final = false) => {
     if (sources) return renderCitedAnswer(body, md, links, sources, final);
     body.replaceChildren(...markdownNodes(md, { links }));
@@ -424,10 +430,19 @@ function addBot({ agent = false, replay = false } = {}) {
       if (frame) return;
       frame = requestAnimationFrame(() => {
         frame = 0;
-        if (pendingText) show(pendingText); // auto-scroll follows if pinned
+        if (pendingText) raw ? showRaw(pendingText) : show(pendingText); // auto-scroll follows if pinned
       });
     },
+    setRaw(text) {
+      cancelAnimationFrame(frame);
+      frame = 0;
+      showRaw(text || "(empty reply)");
+      scrollDown();
+      if (entry) delete entry.partial;
+      op("setRaw", text);
+    },
     set(text) {
+      if (raw) return this.setRaw(text);
       cancelAnimationFrame(frame);
       frame = 0;
       show(text || "_(empty reply)_", true);
@@ -613,7 +628,7 @@ function confirmCard({ title, detail, fields = [] }) {
 
 /** Draws a stored reply again; one cut off by the sidebar closing shows how far it got. */
 function replayBot(entry) {
-  const bot = addBot({ agent: entry.agent, replay: true });
+  const bot = addBot({ agent: entry.agent, raw: entry.raw, replay: true });
   const steps = [];
   for (const [method, ...args] of entry.ops) {
     if (method === "links") bot.links(new Set(args[0]));
@@ -624,10 +639,12 @@ function replayBot(entry) {
     else if (method === "stats") bot.stats({ summary: () => args[0] });
     else if (method === "error") bot.error({ message: args[0], llm: args[1] });
     else if (method === "confirm") bot.pastConfirm(args[0], args[1]);
-    else if (["citations", "evidence", "set", "note", "finish"].includes(method)) bot[method](...args);
+    else if (["citations", "evidence", "set", "setRaw", "note", "finish"].includes(method)) bot[method](...args);
   }
   // Stopped runs end without a reply: show what had streamed in.
-  if (!entry.ops.some(([method]) => method === "set" || method === "error")) bot.set(entry.partial || "_(no reply)_");
+  if (!entry.ops.some(([method]) => method === "set" || method === "setRaw" || method === "error")) {
+    entry.raw ? bot.setRaw(entry.partial || "(no reply)") : bot.set(entry.partial || "_(no reply)_");
+  }
   if (!entry.interrupted) return;
   bot.note("Interrupted: the sidebar was closed before this finished.");
   if (entry.agent) bot.finish();
@@ -771,7 +788,7 @@ async function runAsk(question) {
     for (const p of pages) if (p.error) bot.note(`Couldn't read “${p.title || p.url}”: ${p.error}`);
     bot.links(new Set(pages.map((p) => originOf(p.url))));
     const selection = pages.map((p) => p.selection || "").filter(Boolean).join("\n\n");
-    if (selection) bot.note(`Including selected text (${Math.min(selection.length, 6000)} chars).`);
+    if (selection) bot.note(`Including selected text (${Math.min(selection.length, SELECTION_CHARS)} chars).`);
     const llm = metered(state.llm, meter);
     let image = null;
     let asked = question;
@@ -818,7 +835,7 @@ async function runAsk(question) {
   }
 }
 
-async function runAgent(task) {
+async function runAgent(task, skill = null) {
   const tabs = await contextTabs(state.windowId);
   const active = await activeTab();
   const selection = await pageCall(active.id, "selection").then((r) => r.text).catch(() => "");
@@ -832,9 +849,10 @@ async function runAgent(task) {
     ui: { step: (i, t, o) => bot.step(i, t, o), confirm: (o) => bot.confirm(o), image: (u) => bot.image(u), thumb: (u) => bot.thumb(u) },
   });
   bot.links(agent.sources);
+  if (skill) bot.note(`Using skill @${skill.name}${skill.files?.length ? ` (${skill.files.length} file${skill.files.length === 1 ? "" : "s"})` : ""}. It cannot approve actions.`);
   setRunning({ stop: () => agent.stop() });
   try {
-    const answer = await agent.run(task, { tabId: active.id, otherTabs: tabs.filter((t) => t.id !== active.id), selection });
+    const answer = await agent.run(task, { tabId: active.id, otherTabs: tabs.filter((t) => t.id !== active.id), selection, skill });
     bot.citations(agent.citations);
     bot.set(answer);
   } catch (e) {
@@ -845,6 +863,62 @@ async function runAgent(task) {
     bot.stats(meter);
   }
 }
+
+/** A prompt skill answers once. It does not enter the agent loop or inherit Ask's system prompt. */
+async function runPromptSkill(skill, task) {
+  const bot = addBot({ raw: skill.output === "raw" });
+  const ctrl = new AbortController();
+  const meter = new Meter();
+  setRunning({ stop: () => ctrl.abort() });
+  bot.note(`Using skill @${skill.name}${skill.files?.length ? ` (${skill.files.length} file${skill.files.length === 1 ? "" : "s"})` : ""}.`);
+  try {
+    let image = null;
+    let pageText = "";
+    let selection = "";
+    if (skill.needs === "image") {
+      const tab = await activeTab();
+      if (!tab?.id) throw new Error("No active tab to look at.");
+      const shot = await pageShot(tab.id, { maxWidth: state.settings.screenshotWidth, signal: ctrl.signal });
+      image = shot.url;
+      bot.image(shot.url);
+      bot.note(shot.cropped ? "Showing the model the main image on the page." : "Showing the model a screenshot of the page.");
+      if (state.settings.visionModel && state.settings.visionModel !== state.settings.model) bot.note(`Asking ${state.settings.visionModel}.`);
+    } else if (skill.needs === "page") {
+      const tab = await activeTab();
+      if (!tab?.id) throw new Error("No active tab to read.");
+      const [page] = await readPages([tab]);
+      if (page.error) throw new Error(page.error);
+      pageText = pagesBlock([page], state.settings.maxPageChars);
+      selection = (page.selection || "").slice(0, SELECTION_CHARS);
+      bot.note(`Including “${page.title || page.url}”.`);
+      if (selection) bot.note(`Including selected text (${selection.length} chars).`);
+    }
+    const llm = metered(state.llm, meter);
+    const ask = (images) => {
+      const req = buildSkillRequest({ skill, task, pageText, selection, image, images, settings: state.settings });
+      return llm.chat({ ...req, stream: true, signal: ctrl.signal, onDelta: (t) => bot.stream(t) });
+    };
+    const hasImages = !!image || skillImages(skill).length > 0;
+    let r;
+    try {
+      r = await ask(true);
+    } catch (e) {
+      if (!hasImages || isAbort(e)) throw e;
+      // Text-only models (or a server without the vision projector loaded) reject images outright.
+      bot.note(`The model didn't accept the images (${e.message}). Set a vision model in options; answering without them.`);
+      bot.stream("");
+      r = await ask(false);
+    }
+    if (skill.output === "raw") bot.setRaw(unwrapFence(r.content));
+    else bot.set(r.content);
+  } catch (e) {
+    if (isAbort(e)) bot.note("Stopped.");
+    else bot.error(e);
+  } finally {
+    bot.stats(meter);
+  }
+}
+
 
 async function runSummarize() {
   const tab = await activeTab();
@@ -960,15 +1034,30 @@ async function runRestore() {
   refreshContext();
 }
 
+function composerError(text) {
+  const line = $("composerError");
+  line.hidden = !text;
+  line.textContent = text || "";
+}
+
 function send() {
   if (state.running) return stopRunning();
   if (state.reserved) return;
   const input = $("input");
   const text = input.value.trim();
   if (!text) return;
+  const route = routeSkill(text, state.skills, state.mode);
+  if (route?.error) return composerError(route.error);
+  composerError("");
   input.value = "";
+  input.style.height = "auto";
+  hideSkillMenu();
   addUser(text);
-  guard(() => (state.mode === "agent" ? runAgent(text) : runAsk(text)));
+  guard(() => {
+    if (!route) return state.mode === "agent" ? runAgent(text) : runAsk(text);
+    if (route.skill.kind === "agent") return runAgent(route.task, route.skill);
+    return runPromptSkill(route.skill, route.task);
+  });
 }
 
 function setMode(mode) {
@@ -978,7 +1067,7 @@ function setMode(mode) {
     b.setAttribute("aria-checked", String(selected));
     b.tabIndex = selected ? 0 : -1;
   }
-  $("input").placeholder = mode === "agent" ? "Describe a task, e.g. “summarize the last 3 releases”" : "Ask about this page…";
+  $("input").placeholder = mode === "agent" ? "Describe a task, or @skill …" : "Ask about this page, or @skill …";
   $("keepWrap").hidden = mode !== "ask";
   $("modeHelp").textContent = mode === "agent"
     ? "Can interact with pages. Requests approval for detected risky actions; ordinary controls can still have site-script side effects."
@@ -989,6 +1078,80 @@ function setMode(mode) {
   renderContext();
   browser.storage.local.set({ mode }).catch(() => {});
 }
+
+let skillMenuIndex = 0;
+
+function hideSkillMenu() {
+  const menu = $("skillMenu");
+  menu.hidden = true;
+  menu.replaceChildren();
+  $("input").setAttribute("aria-expanded", "false");
+  $("input").removeAttribute("aria-activedescendant");
+}
+
+/** The skill name being typed. A skill is named only at the start of a message, as routeSkill reads it. */
+function skillQuery() {
+  const input = $("input");
+  if (input.selectionStart !== input.selectionEnd) return null;
+  const caret = input.selectionStart;
+  const m = /^\s*@([A-Za-z0-9-]{0,40})$/.exec(input.value.slice(0, caret));
+  if (!m) return null;
+  return { start: caret - m[1].length - 1, query: m[1].toLowerCase() };
+}
+
+function matchingSkills(query) {
+  return state.skills
+    .filter((s) => s.name.includes(query) || s.description.toLowerCase().includes(query))
+    .sort((a, b) => (a.name.startsWith(query) ? 0 : 1) - (b.name.startsWith(query) ? 0 : 1) || a.name.localeCompare(b.name))
+    .slice(0, 8);
+}
+
+function insertSkill(name) {
+  const input = $("input");
+  const q = skillQuery();
+  if (!q) return;
+  const before = input.value.slice(0, q.start);
+  const after = input.value.slice(input.selectionStart);
+  const insert = `@${name} `;
+  input.value = before + insert + after;
+  const caret = (before + insert).length;
+  input.setSelectionRange(caret, caret);
+  input.style.height = "auto";
+  input.style.height = Math.min(160, input.scrollHeight) + "px";
+  hideSkillMenu();
+  composerError("");
+  input.focus();
+}
+
+function showSkillMenu() {
+  const q = skillQuery();
+  const menu = $("skillMenu");
+  if (!q) return hideSkillMenu();
+  const matches = matchingSkills(q.query);
+  if (!matches.length) return hideSkillMenu();
+  skillMenuIndex = ((skillMenuIndex % matches.length) + matches.length) % matches.length;
+  menu.replaceChildren(...matches.map((s, i) => {
+    const b = el("button");
+    b.type = "button";
+    b.id = `skillOption${i}`;
+    b.tabIndex = -1;
+    b.className = i === skillMenuIndex ? "on" : "";
+    b.setAttribute("role", "option");
+    b.setAttribute("aria-selected", i === skillMenuIndex ? "true" : "false");
+    b.append(el("span", "name", `@${s.name}`));
+    const about = [s.kind === "agent" ? "Agent" : "", s.description].filter(Boolean).join(" · ");
+    if (about) b.append(el("span", "dim", about));
+    b.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      insertSkill(s.name);
+    });
+    return b;
+  }));
+  menu.hidden = false;
+  $("input").setAttribute("aria-expanded", "true");
+  $("input").setAttribute("aria-activedescendant", `skillOption${skillMenuIndex}`);
+}
+
 
 // ---------- status, permission, context ----------
 function banner(text, actions = []) {
@@ -1213,6 +1376,7 @@ async function consumePending() {
 async function applySettings() {
   state.settings = await loadSettings();
   state.llm = new LLM(state.settings);
+  state.skills = await loadSkills().catch(() => state.skills);
   checkSetup();
 }
 
@@ -1249,17 +1413,51 @@ async function init() {
 
   $("send").addEventListener("click", send);
   $("input").addEventListener("keydown", (e) => {
+    const menuOpen = !$("skillMenu").hidden;
+    if (menuOpen && e.key === "ArrowDown") {
+      e.preventDefault();
+      skillMenuIndex += 1;
+      showSkillMenu();
+      return;
+    }
+    if (menuOpen && e.key === "ArrowUp") {
+      e.preventDefault();
+      skillMenuIndex -= 1;
+      showSkillMenu();
+      return;
+    }
+    if (menuOpen && (e.key === "Enter" || e.key === "Tab") && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      const name = $("skillMenu").querySelector(".on .name")?.textContent?.replace(/^@/, "");
+      if (name) insertSkill(name);
+      return;
+    }
+    if (menuOpen && e.key === "Escape") {
+      e.preventDefault();
+      // Otherwise the document's Escape handler sees a closed menu and stops the running task.
+      e.stopPropagation();
+      hideSkillMenu();
+      return;
+    }
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
       e.preventDefault();
       send();
     }
   });
   document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !$("skillMenu").hidden) return hideSkillMenu();
     if (e.key === "Escape" && state.running) stopRunning();
   });
   $("input").addEventListener("input", (e) => {
     e.target.style.height = "auto";
     e.target.style.height = Math.min(160, e.target.scrollHeight) + "px";
+    skillMenuIndex = 0;
+    composerError("");
+    showSkillMenu();
+  });
+  document.addEventListener("click", (e) => {
+    if (e.target.closest?.("#skillMenu, #input")) return;
+    hideSkillMenu();
   });
   const modes = [...document.querySelectorAll(".modes button")];
   for (const b of modes) {
@@ -1325,7 +1523,13 @@ async function init() {
     if (!state.contextBusy) renderContext();
   });
   browser.storage.onChanged.addListener((changes, area) => {
-    if (area !== "local" || !changes.settings) return;
+    if (area !== "local") return;
+    if (isSkillChange(changes)) {
+      const next = applySkillChanges(state.skills, changes);
+      if (next) state.skills = next;
+      else loadSkills().then((list) => { state.skills = list; }).catch(() => {});
+    }
+    if (!changes.settings) return;
     // A run keeps the settings it started with; changes made meanwhile apply when it ends.
     if (state.running || state.reserved) state.settingsChanged = true;
     else applySettings();

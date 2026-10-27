@@ -46,6 +46,18 @@ summary { cursor: pointer; font-weight: 600; }
 .advanced-content { margin-top: 16px; }
 .advanced-content h2:not(:first-child) { margin-top: 20px; }
 button:disabled { cursor: wait; opacity: .65; }
+textarea { display: block; width: 100%; margin-top: 4px; padding: 7px 9px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: inherit; font: inherit; }
+.skill-body { min-height: 140px; resize: vertical; }
+.skill-list { list-style: none; margin: 0 0 12px; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.skill-list:empty { display: none; }
+.skill-list li { border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; }
+.skill-list .meta { color: var(--muted); font-size: 12.5px; }
+.skill-list .row { display: flex; gap: 8px; margin-top: 8px; }
+.skill-files { list-style: none; margin: 0 0 12px; padding: 0; }
+.skill-files:empty { display: none; }
+.skill-files li { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; font-size: 12.5px; padding: 4px 0; border-bottom: 1px solid var(--border); }
+.skill-files code { overflow-wrap: anywhere; }
+button.danger { color: var(--bad); }
 @media (max-width: 380px) {
   main { padding: 16px 12px 0; }
   .probe { grid-template-columns: minmax(0, 1fr); gap: 4px; }

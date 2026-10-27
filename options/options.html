@@ -102,6 +102,60 @@
       </div>
     </details>
 
+    <section aria-labelledby="skillsHeading">
+      <h2 id="skillsHeading">Skills</h2>
+      <p class="hint">A skill is instructions saved on this computer. In the sidebar, type <code>@krea2-caption caption this image</code>. Import folder… keeps <code>SKILL.md</code> and the other files in that folder (<code>references/</code>, <code>assets/</code>). <code>scripts/</code>, hidden files and files over the limits are skipped and listed. A prompt skill answers once and sends its files with the request. An agent skill only adds instructions to Agent mode and reads its files when it needs them: it cannot approve an action or contact any server but the one above. Agent skills need Agent mode. Skills save with the buttons here, not with Save settings.</p>
+      <ul id="skillList" class="skill-list"></ul>
+      <p id="skillEmpty" class="hint">No skills yet.</p>
+      <div class="row2">
+        <label>Name
+          <input id="skillName" spellcheck="false" placeholder="krea2-caption" aria-describedby="skillSlug">
+        </label>
+        <label>Description <span class="opt">(optional)</span>
+          <input id="skillDescription" placeholder="Caption an image in Krea 2 format">
+        </label>
+      </div>
+      <p class="hint" id="skillSlug"></p>
+      <div class="row3">
+        <label>Kind
+          <select id="skillKind" aria-describedby="skillKindHint">
+            <option value="prompt">Prompt — one answer</option>
+            <option value="agent">Agent — browse with these instructions</option>
+          </select>
+        </label>
+        <label>Include
+          <select id="skillNeeds">
+            <option value="none">Nothing extra</option>
+            <option value="image">A screenshot</option>
+            <option value="page">Page text</option>
+          </select>
+        </label>
+        <label>Reply
+          <select id="skillOutput">
+            <option value="markdown">Markdown</option>
+            <option value="raw">Raw text</option>
+          </select>
+        </label>
+      </div>
+      <p class="hint" id="skillKindHint">A screenshot is sent to the vision model when one is set. Raw text is not treated as Markdown, so a caption format stays as typed. Include and Reply apply to prompt skills only.</p>
+      <label>Instructions
+        <textarea id="skillBody" class="skill-body" spellcheck="true" placeholder="Output only a Krea 2 caption of the attached image. No preamble."></textarea>
+      </label>
+      <ul id="skillFiles" class="skill-files"></ul>
+      <div class="actions">
+        <button id="skillAdd" type="button" class="primary">Add skill</button>
+        <button id="skillCancel" type="button" hidden>Cancel</button>
+        <button id="skillImport" type="button">Import file…</button>
+        <button id="skillFolder" type="button">Import folder…</button>
+        <button id="skillAddFiles" type="button">Add files…</button>
+        <input id="skillFile" type="file" accept=".md,.txt,.markdown,text/markdown,text/plain" hidden>
+        <input id="skillDir" type="file" webkitdirectory multiple hidden>
+        <input id="skillExtra" type="file" multiple hidden>
+        <span id="skillResult" class="result" role="status" aria-live="polite" aria-atomic="true"></span>
+      </div>
+    </section>
+
+
     <div class="actions sticky">
       <button id="save" type="button" class="primary">Save settings</button>
       <span id="saveResult" class="result" role="status" aria-live="polite" aria-atomic="true"></span>
@@ -109,6 +163,7 @@
   </main>
   <script src="../lib/settings.js"></script>
   <script src="../lib/llm.js"></script>
+  <script src="../lib/skills.js"></script>
   <script src="options.js"></script>
 </body>
 </html>
