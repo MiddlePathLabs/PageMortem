@@ -80,7 +80,14 @@
       <summary>Advanced</summary>
       <div class="advanced-content">
         <h2>Generation and context</h2>
-        <label class="check"><input id="disableThinking" type="checkbox"> Turn off thinking (sends <code>enable_thinking: false</code> to compatible servers)</label>
+        <label>Thinking level
+          <select id="thinking" aria-describedby="thinkingHint"></select>
+        </label>
+        <p class="hint" id="thinkingHint">Off sends <code>enable_thinking: false</code> (Qwen3 and similar). Other levels send <code>reasoning_effort</code> (gpt-oss, vLLM, OpenAI-compatible reasoning models). Check thinking lists only the levels your server takes.</p>
+        <div class="probe">
+          <button id="checkThinking" type="button" aria-describedby="thinkingResult">Check thinking</button>
+          <span id="thinkingResult" class="result" role="status" aria-live="polite" aria-atomic="true">Not checked. Showing common levels; your server may not take all of them.</span>
+        </div>
         <div class="row3">
           <label>Temperature <input id="temperature" type="number" min="0" max="2" step="0.1"></label>
           <label>Max reply tokens <input id="maxTokens" type="number" min="256" step="256"></label>

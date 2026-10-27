@@ -127,6 +127,70 @@ test("model requests refuse redirects and send the configured headers", async ()
   assert.ok(init.signal, "every request carries a timeout signal");
 });
 
+test("the thinking level maps onto the request body", async () => {
+  let body;
+  const ctx = lib({ fetch: async (url, i) => ((body = JSON.parse(i.body)), new Response(JSON.stringify({ choices: [{ message: { content: "hi" } }] }))) });
+  const send = async (thinking, opts = {}) => (await new (ctx.$("LLM"))({ ...SETTINGS, thinking }).chat({ messages: [], ...opts }), body);
+  const d = await send("default");
+  assert.equal(d.reasoning_effort, undefined);
+  assert.equal(d.chat_template_kwargs, undefined);
+  assert.deepEqual(plain((await send("off")).chat_template_kwargs), { enable_thinking: false });
+  const high = await send("high");
+  assert.equal(high.reasoning_effort, "high");
+  assert.deepEqual(plain(high.chat_template_kwargs), { reasoning_effort: "high" });
+  const forced = await send("high", { noThinking: true });
+  assert.equal(forced.reasoning_effort, undefined);
+  assert.deepEqual(plain(forced.chat_template_kwargs), { enable_thinking: false });
+});
+
+test("chat templates reveal which reasoning efforts they take", () => {
+  const efforts = (t) => plain(lib().$("templateEfforts")(t));
+  assert.equal(efforts("{{ messages }}"), null);
+  // A checked list is authoritative, even when it leaves out "high".
+  assert.deepEqual(efforts("{%- set resolved_reasoning_effort = reasoning_effort|default('xhigh') %}\n{%- if resolved_reasoning_effort not in ('xhigh', 'medium', 'low') %}"), ["xhigh", "medium", "low"]);
+  // gpt-oss style: printed, not checked, so any value goes.
+  assert.deepEqual(efforts("{%- set reasoning_effort = \"medium\" %}\nReasoning: {{ reasoning_effort }}"), ["low", "medium", "high"]);
+});
+
+// A fake server: `info` maps /health and /props to JSON (others 404); a chat reasons unless thinking is off, and
+// rejects efforts outside `accepts`.
+function thinkingServer({ info = {}, thinks = true, offWorks = true, accepts = null }) {
+  const bodies = [];
+  const fetch = async (url, init) => {
+    const path = new URL(url).pathname;
+    if (init.method === "GET") return info[path] ? new Response(JSON.stringify(info[path])) : new Response("Not Found", { status: 404 });
+    const body = JSON.parse(init.body);
+    bodies.push(body);
+    if (body.reasoning_effort && accepts && !accepts.includes(body.reasoning_effort)) return new Response("bad effort", { status: 400 });
+    const off = body.chat_template_kwargs?.enable_thinking === false && offWorks;
+    return new Response(JSON.stringify({ choices: [{ message: { content: "42", reasoning_content: thinks && !off ? "12 + 30 = 42" : "" } }] }));
+  };
+  return { ctx: lib({ fetch }), bodies };
+}
+
+test("thinking levels come from the server's /health report", async () => {
+  const { ctx } = thinkingServer({ info: { "/health": { reasoning_effort_values: ["none", "low", "high", "xhigh"], reasoning_effort_default: "xhigh" } } });
+  const r = plain(await new (ctx.$("LLM"))(SETTINGS).thinkingSupport());
+  assert.deepEqual(r.levels, ["off", "low", "high", "xhigh"]);
+  assert.equal(r.serverDefault, "xhigh");
+  assert.equal(r.verified, true);
+});
+
+test("thinking levels fall back to the chat template, then to test requests", async () => {
+  const template = { "/props": { chat_template: "{%- if enable_thinking %}{%- if reasoning_effort not in ['low', 'medium'] %}" } };
+  let r = plain(await new (thinkingServer({ info: template }).ctx.$("LLM"))(SETTINGS).thinkingSupport());
+  assert.deepEqual(r.levels, ["off", "low", "medium"]);
+
+  const probed = thinkingServer({ offWorks: false, accepts: ["low", "high"] });
+  r = plain(await new (probed.ctx.$("LLM"))(SETTINGS).thinkingSupport());
+  assert.deepEqual(r.levels, ["low", "high"], "Off is left out when it doesn't stop the reasoning");
+  assert.equal(r.verified, false);
+  assert.ok(probed.bodies.every((b) => b.max_tokens <= 256), "probes stay small");
+
+  r = plain(await new (thinkingServer({ thinks: false }).ctx.$("LLM"))(SETTINGS).thinkingSupport());
+  assert.deepEqual(r.levels, [], "a model that doesn't reason gets no levels");
+});
+
 test("a model server that never answers times out with a readable error", async () => {
   const ctx = lib({ fetch: hangingFetch });
   const llm = new (ctx.$("LLM"))({ ...SETTINGS, requestTimeout: 50 });

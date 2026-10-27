@@ -1,9 +1,9 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const TEXT = ["endpoint", "apiKey", "model", "visionModel", "language", "toolMode"];
+const TEXT = ["endpoint", "apiKey", "model", "visionModel", "language", "toolMode", "thinking"];
 const NUM = ["temperature", "maxTokens", "maxPageChars", "maxSteps", "screenshotWidth", "translateConcurrency"];
-const BOOL = ["disableThinking", "showStats", "stayOnSite", "confirmAll", "closeAgentTabs"];
+const BOOL = ["showStats", "stayOnSite", "confirmAll", "closeAgentTabs"];
 
 function read() {
   const s = {};
@@ -13,12 +13,29 @@ function read() {
     s[k] = Number.isFinite(v) && $(k).value !== "" ? v : DEFAULTS[k];
   }
   for (const k of BOOL) s[k] = $(k).checked;
+  Object.assign(s, thinking);
   s.language ||= DEFAULTS.language;
   s.endpoint ||= DEFAULTS.endpoint;
   return s;
 }
 
+// What the thinking dropdown offers; replaced by Check thinking and saved with the other settings.
+let thinking = { thinkingLevels: null, thinkingDefault: null };
+const LEVEL_NAMES = { off: "Off", minimal: "Minimal", low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", max: "Max" };
+
+function fillThinking(selected) {
+  const levels = thinking.thinkingLevels || ["off", "low", "medium", "high"];
+  const def = thinking.thinkingDefault ? ` (${LEVEL_NAMES[thinking.thinkingDefault] || thinking.thinkingDefault})` : "";
+  const options = [new Option(`Server default${def}`, "default"), ...levels.map((l) => new Option(LEVEL_NAMES[l] || l, l))];
+  // Keep a saved level the server didn't list, so opening settings never changes it silently.
+  if (selected && selected !== "default" && !levels.includes(selected)) options.push(new Option(`${LEVEL_NAMES[selected] || selected} (not detected)`, selected));
+  $("thinking").replaceChildren(...options);
+  $("thinking").value = selected || "default";
+}
+
 function fill(s) {
+  thinking = { thinkingLevels: s.thinkingLevels, thinkingDefault: s.thinkingDefault };
+  fillThinking(s.thinking);
   for (const k of TEXT) $(k).value = s[k] ?? "";
   for (const k of NUM) $(k).value = s[k];
   for (const k of BOOL) $(k).checked = !!s[k];
@@ -156,6 +173,18 @@ async function checkVision(llm, s) {
   return `Vision probe passed for ${model}: correctly identified ${image.left} on the left and ${image.right} on the right of a generated PNG. One simple image can be guessed; this is not a guarantee of screenshot understanding.`;
 }
 
+async function checkThinking(llm) {
+  const model = await llm.model();
+  const r = await llm.thinkingSupport();
+  thinking = { thinkingLevels: r.levels, thinkingDefault: r.serverDefault };
+  fillThinking($("thinking").value);
+  const names = r.levels.map((l) => LEVEL_NAMES[l] || l).join(", ");
+  if (!r.thinks && !r.levels.length) return `${model} gave no separate reasoning in a test reply, so there is nothing to set. Only Server default is offered.`;
+  const off = !r.thinks || r.levels.includes("off") ? "" : " Turning thinking off didn't stop it, so Off isn't offered.";
+  const how = r.verified ? `from ${r.source}` : "accepted without an error; whether each one changes how much it thinks isn't verified";
+  return `${model}: ${names || "no levels"} (${how}).${off} Save settings to keep this list.`;
+}
+
 async function init() {
   fill(await loadSettings());
   showLock();
@@ -164,6 +193,7 @@ async function init() {
   $("checkText").addEventListener("click", () => runCheck("checkText", "textResult", checkText));
   $("checkTools").addEventListener("click", () => runCheck("checkTools", "toolsResult", checkTools));
   $("checkVision").addEventListener("click", () => runCheck("checkVision", "visionResult", checkVision));
+  $("checkThinking").addEventListener("click", () => runCheck("checkThinking", "thinkingResult", checkThinking));
   $("save").addEventListener("click", async () => {
     $("save").disabled = true;
     try {
