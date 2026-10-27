@@ -261,9 +261,11 @@ export const answer = (text) => call("finish", { answer: text });
 export function fakeUi(decide = () => "no") {
   const cards = [];
   const steps = [];
+  const thinks = [];
   return {
     cards,
     steps,
+    thinks,
     step: (icon, text) => {
       const s = { icon, text, status: "running" };
       steps.push(s);
@@ -274,6 +276,7 @@ export function fakeUi(decide = () => "no") {
       return decide(card, cards.length);
     },
     image: () => {},
+    think: (text) => thinks.push(text),
   };
 }
 

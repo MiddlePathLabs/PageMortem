@@ -166,6 +166,10 @@ main { flex: 1; min-height: 0; overflow-y: auto; padding: 12px; display: flex; f
 .steps li.fail .tx { color: var(--bad); }
 .steps li .err { grid-column: 2; color: var(--bad); font-size: 12px; }
 .steps li.running .tx::after { content: " …"; color: var(--muted); }
+
+.think { margin-bottom: 8px; font-size: 12.5px; }
+.think > summary { color: var(--muted); cursor: pointer; }
+.think-body { margin: 6px 0 0; padding-left: 2px; max-height: 40vh; overflow-y: auto; white-space: pre-wrap; color: var(--muted); font-style: italic; }
 .shot { grid-column: 2; max-width: 100%; max-height: 120px; border: 1px solid var(--border); border-radius: 4px; cursor: zoom-in; object-fit: cover; object-position: top; }
 .shot.big { max-height: none; cursor: zoom-out; }
 

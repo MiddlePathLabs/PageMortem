@@ -387,6 +387,23 @@ function addBot({ agent = false, replay = false, raw = false } = {}) {
   log.append(wrap);
   scrollDown(true);
 
+  // The model's own reasoning (reasoning_content), when the server sends any: thinking is on. Collapsed — it's
+  // background to the answer — and each call replaces the text, so after an agent run it holds the final reply's.
+  let thinkBox = null, thinkText = null;
+  const drawThink = (text) => {
+    if (!thinkBox) {
+      thinkBox = el("details", "think");
+      thinkText = el("div", "think-body");
+      thinkBox.append(el("summary", null, "Thinking"), thinkText);
+      body.before(thinkBox);
+      // The block says "Thinking"; the placeholder must not say it too. Ask answers are still being written, and the
+      // agent's step list already shows what it is doing.
+      if (agent) thinking.remove();
+      else thinking.textContent = "Answering";
+    }
+    thinkText.textContent = text;
+  };
+
   // Model text is escaped, parsed inertly and allowlist-filtered. Links work only to pages the answer came from.
   let links = new Set();
   let sources = null, evidenceSources = null;
@@ -400,7 +417,7 @@ function addBot({ agent = false, replay = false, raw = false } = {}) {
     body.replaceChildren(...markdownNodes(md, { links }));
     if (final && evidenceSources) attachEvidence(body, evidenceSources);
   };
-  let frame = 0, pendingText = "", stepCount = 0;
+  let frame = 0, pendingText = "", pendingThink = "", stepCount = 0;
   const api = {
     /** Origins the answer may link to (a live Set is fine: the agent adds pages as it reads them). */
     links(origins) {
@@ -430,24 +447,39 @@ function addBot({ agent = false, replay = false, raw = false } = {}) {
       if (frame) return;
       frame = requestAnimationFrame(() => {
         frame = 0;
+        if (pendingThink) drawThink(pendingThink);
         if (pendingText) raw ? showRaw(pendingText) : show(pendingText); // auto-scroll follows if pinned
       });
+    },
+    /** The model's reasoning so far; ignored when the server sends none (thinking off or unsupported). */
+    think(text) {
+      if (!text) return;
+      pendingThink = text;
+      if (entry) {
+        entry.think = text; // like partial: the latest reasoning survives an interrupted run
+        saveSoon();
+      }
+      if (!frame) drawThink(pendingThink);
     },
     setRaw(text) {
       cancelAnimationFrame(frame);
       frame = 0;
+      if (pendingThink) drawThink(pendingThink);
       showRaw(text || "(empty reply)");
       scrollDown();
-      if (entry) delete entry.partial;
+      if (entry) { delete entry.partial; delete entry.think; }
+      if (pendingThink) op("think", pendingThink);
       op("setRaw", text);
     },
     set(text) {
       if (raw) return this.setRaw(text);
       cancelAnimationFrame(frame);
       frame = 0;
+      if (pendingThink) drawThink(pendingThink);
       show(text || "_(empty reply)_", true);
       scrollDown();
-      if (entry) delete entry.partial;
+      if (entry) { delete entry.partial; delete entry.think; }
+      if (pendingThink) op("think", pendingThink);
       op("set", text);
     },
     note(text) {
@@ -589,6 +621,7 @@ function addBot({ agent = false, replay = false, raw = false } = {}) {
     },
     error(e) {
       lastLi?.classList.remove("running");
+      if (pendingThink) drawThink(pendingThink);
       const box = el("div", "error", e.message || String(e));
       const settingsProblem = e instanceof LLMError || !!e.llm;
       op("error", e.message || String(e), settingsProblem);
@@ -639,9 +672,10 @@ function replayBot(entry) {
     else if (method === "stats") bot.stats({ summary: () => args[0] });
     else if (method === "error") bot.error({ message: args[0], llm: args[1] });
     else if (method === "confirm") bot.pastConfirm(args[0], args[1]);
-    else if (["citations", "evidence", "set", "setRaw", "note", "finish"].includes(method)) bot[method](...args);
+    else if (["think", "citations", "evidence", "set", "setRaw", "note", "finish"].includes(method)) bot[method](...args);
   }
   // Stopped runs end without a reply: show what had streamed in.
+  if (entry.think) bot.think(entry.think);
   if (!entry.ops.some(([method]) => method === "set" || method === "setRaw" || method === "error")) {
     entry.raw ? bot.setRaw(entry.partial || "(no reply)") : bot.set(entry.partial || "_(no reply)_");
   }
@@ -811,7 +845,7 @@ async function runAsk(question) {
     }
     const ask = (img) => state.chat.ask({
       question: asked, pages, selection, image: img, llm, settings: state.settings, keepPages: false,
-      onDelta: (t) => bot.stream(t), signal: ctrl.signal,
+      onDelta: (t, r) => { bot.think(r); bot.stream(t); }, signal: ctrl.signal,
     });
     let reply;
     try {
@@ -846,7 +880,7 @@ async function runAgent(task, skill = null) {
     llm: metered(state.llm, meter),
     windowId: state.windowId,
     sessionGrants: state.sessionGrants,
-    ui: { step: (i, t, o) => bot.step(i, t, o), confirm: (o) => bot.confirm(o), image: (u) => bot.image(u), thumb: (u) => bot.thumb(u) },
+    ui: { step: (i, t, o) => bot.step(i, t, o), confirm: (o) => bot.confirm(o), image: (u) => bot.image(u), thumb: (u) => bot.thumb(u), think: (r) => bot.think(r) },
   });
   bot.links(agent.sources);
   if (skill) bot.note(`Using skill @${skill.name}${skill.files?.length ? ` (${skill.files.length} file${skill.files.length === 1 ? "" : "s"})` : ""}. It cannot approve actions.`);
@@ -896,7 +930,7 @@ async function runPromptSkill(skill, task) {
     const llm = metered(state.llm, meter);
     const ask = (images) => {
       const req = buildSkillRequest({ skill, task, pageText, selection, image, images, settings: state.settings });
-      return llm.chat({ ...req, stream: true, signal: ctrl.signal, onDelta: (t) => bot.stream(t) });
+      return llm.chat({ ...req, stream: true, signal: ctrl.signal, onDelta: (t, r) => { bot.think(r); bot.stream(t); } });
     };
     const hasImages = !!image || skillImages(skill).length > 0;
     let r;
@@ -937,7 +971,7 @@ async function runSummarize() {
     bot.evidence([{ tabId: tab.id, doc: p.doc, url: p.url, title: p.title, text: p.text }]);
     const answer = await summarize({
       page: p, llm: metered(state.llm, meter), settings: state.settings, signal: ctrl.signal,
-      onDelta: (t) => bot.stream(t),
+      onDelta: (t, r) => { bot.think(r); bot.stream(t); },
       onProgress: (i, n) => bot.progress(i - 1, n, `Reading part ${i} of ${n}`),
     });
     bot.set(answer);

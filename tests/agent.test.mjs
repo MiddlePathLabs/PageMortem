@@ -492,3 +492,15 @@ test("find_in_page reports no matches and needs a query", async () => {
   assert.match(none, /^No matches for "refund"/);
   assert.match(missing, /needs the argument "query"/);
 });
+
+test("the model's reasoning is passed to the UI for display", async () => {
+  const { run, ui } = setup({
+    sites: { [SHOP]: page("Shop", "items") },
+    replies: [
+      { ...call("note", { text: "looking around" }), reasoning: "check the page first" },
+      { ...answer("done"), reasoning: "nothing more to do, finishing" },
+    ],
+  });
+  assert.equal(await run(), "done");
+  assert.deepEqual(ui.thinks, ["check the page first", "nothing more to do, finishing"]);
+});
