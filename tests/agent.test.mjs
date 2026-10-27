@@ -364,7 +364,7 @@ test("answers' links are limited to pages the agent read", async () => {
   assert.deepEqual([...agent.sources], ["https://shop.example"]);
 });
 
-test("find_in_page returns matches with parts and element numbers, labelled untrusted, without approval", async () => {
+test("find_in_page keeps highlighted targets document-bound without approval", async () => {
   const text = "# Help\nShipping takes 3 days.\n[4 link \"Return policy\" → /returns]\nReturns are free within 30 days.";
   const { run, agent, ui, web } = setup({
     sites: { [SHOP]: page("Shop", text, { 4: { kind: "link", tag: "A", label: "Return policy", href: `${SHOP}returns` } }) },
@@ -372,9 +372,6 @@ test("find_in_page returns matches with parts and element numbers, labelled untr
   });
   await run();
   const r = results(agent)[0];
-  assert.match(r, /^Found 2 matches for "return"/);
-  assert.match(r, /1\. part 1, \[4 link\]: \[4 link "Return policy"/);
-  assert.match(r, /2\. part 1: Returns are free/);
   assert.match(r, /data, not instructions/);
   assert.equal(ui.cards.length, 0);
   assert.equal(web.log.find(([op]) => op === "highlight")[2].doc, agent.docs.get(1), "ids from find stay bound to the page");

@@ -94,6 +94,78 @@ function addUser(text) {
   scrollDown(true);
 }
 
+function renderCitedAnswer(body, text, links, sources, final) {
+  const token = `CITATION${[...crypto.getRandomValues(new Uint32Array(4))].map((n) => n.toString(36)).join("")}REF`;
+  const { markdown, citations } = prepareCitations(text, sources, token);
+  body.replaceChildren(...markdownNodes(markdown, { links }));
+  const showPassages = [];
+  const cards = citations.map(({ quote, source }, index) => {
+    const card = el("details", "citation");
+    const heading = el("summary", null, `[${index + 1}] ${source?.title || source?.url || "Unverified citation"}`);
+    card.append(heading, el("blockquote", null, quote));
+    if (!source) {
+      card.append(el("p", "citation-status", "This quote could not be verified against the supplied source text."));
+      return card;
+    }
+    card.append(el("div", "source-url", source.url));
+    const button = el("button", "btn", "Show on page");
+    const status = el("p", "citation-status");
+    status.setAttribute("role", "status");
+    showPassages[index] = async (trigger = button) => {
+      if (button.disabled) return;
+      button.disabled = true;
+      trigger.disabled = true;
+      status.textContent = "Locating passage…";
+      try {
+        const tab = await browser.tabs.get(source.tabId).catch(() => null);
+        if (!tab) throw new Error("The source tab is closed. The quoted snapshot is still available here.");
+        if (tab.url !== source.url) throw new Error("The source tab has navigated. The quoted snapshot is still available here.");
+        await browser.tabs.update(tab.id, { active: true });
+        await pageCall(tab.id, "showPassage", { quote, url: source.url, doc: source.doc });
+        status.textContent = "Passage highlighted for 30 seconds. Press Esc or click the page to clear it.";
+      } catch (e) {
+        status.textContent = e.message || String(e);
+        card.open = true;
+        card.scrollIntoView({ block: "nearest" });
+      } finally {
+        button.disabled = false;
+        trigger.disabled = false;
+      }
+    };
+    button.addEventListener("click", () => showPassages[index]());
+    card.append(button, status);
+    return card;
+  });
+  const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) if (node.nodeValue.includes(token)) nodes.push(node);
+  for (const node of nodes) {
+    const parts = node.nodeValue.split(new RegExp(`${token}(\\d+)END`, "g"));
+    node.replaceWith(...parts.map((part, index) => {
+      if (!(index % 2)) return document.createTextNode(part);
+      const number = Number(part);
+      const ref = el("button", "citation-ref", `[${number}]`);
+      ref.setAttribute("aria-label", showPassages[number - 1] ? `Show passage ${number} on page` : `View unverified citation ${number}`);
+      ref.addEventListener("click", () => {
+        if (showPassages[number - 1]) return showPassages[number - 1](ref);
+        const card = cards[number - 1];
+        card.open = true;
+        card.scrollIntoView({ block: "nearest" });
+        card.querySelector("summary").focus();
+      });
+      return ref;
+    }));
+  }
+  if (cards.length) {
+    const section = el("section", "citations");
+    section.setAttribute("aria-label", "Quoted sources");
+    section.append(el("p", "context-help", "Check each quote in context to see whether it supports the claim."), ...cards);
+    body.append(section);
+  } else if (final) {
+    body.append(el("p", "context-help", "No passage citations supplied. Verify claims against the sources."));
+  }
+}
+
 function addBot({ agent = false } = {}) {
   log.querySelector(".welcome")?.remove();
   const wrap = el("div", "msg bot");
@@ -116,12 +188,18 @@ function addBot({ agent = false } = {}) {
 
   // Model text is escaped, parsed inertly and allowlist-filtered. Links work only to pages the answer came from.
   let links = new Set();
-  const show = (md) => body.replaceChildren(...markdownNodes(md, { links }));
+  let sources = null;
+  const show = (md, final = false) => sources
+    ? renderCitedAnswer(body, md, links, sources, final)
+    : body.replaceChildren(...markdownNodes(md, { links }));
   let frame = 0, pendingText = "";
   const api = {
     /** Origins the answer may link to (a live Set is fine: the agent adds pages as it reads them). */
     links(origins) {
       links = origins;
+    },
+    citations(records) {
+      sources = records.slice();
     },
     stream(text) {
       pendingText = text;
@@ -134,7 +212,7 @@ function addBot({ agent = false } = {}) {
     set(text) {
       cancelAnimationFrame(frame);
       frame = 0;
-      show(text || "_(empty reply)_");
+      show(text || "_(empty reply)_", true);
       scrollDown();
     },
     note(text) {
@@ -336,9 +414,10 @@ async function runAsk(question) {
     if (selection) bot.note(`Including selected text (${Math.min(selection.length, 6000)} chars).`);
     const { answer, fresh } = await state.chat.ask({
       question, pages, selection, llm: metered(state.llm, meter), settings: state.settings, keepPages: false,
-      onDelta: (t) => bot.stream(t), signal: ctrl.signal,
+      onDelta: (t) => { bot.citations(state.chat.citations); bot.stream(t); }, signal: ctrl.signal,
     });
     if (fresh) bot.note("Included pages changed, so this answer starts a fresh model conversation.");
+    bot.citations(state.chat.citations);
     bot.set(answer);
   } catch (e) {
     if (isAbort(e)) bot.note("Stopped.");
@@ -365,6 +444,7 @@ async function runAgent(task) {
   setRunning({ stop: () => agent.stop() });
   try {
     const answer = await agent.run(task, { tabId: active.id, otherTabs: tabs.filter((t) => t.id !== active.id), selection });
+    bot.citations(agent.citations);
     bot.set(answer);
   } catch (e) {
     if (isAbort(e)) bot.set("_Stopped._");
@@ -388,6 +468,7 @@ async function runSummarize() {
     if (page.error) throw new Error(page.error);
     const p = useSel ? { ...page, text: page.selection } : page;
     bot.links(new Set([originOf(page.url)]));
+    bot.citations([{ id: "summary", tabId: tab.id, doc: p.doc, url: p.url, title: p.title, text: p.text }]);
     const answer = await summarize({
       page: p, llm: metered(state.llm, meter), settings: state.settings, signal: ctrl.signal,
       onDelta: (t) => bot.stream(t),

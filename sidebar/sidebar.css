@@ -84,6 +84,15 @@ button:disabled { cursor: default; opacity: .5; }
 .approval-fields { margin: 8px 0; font-size: 12px; }
 .approval-fields dt { font-weight: 600; }
 .approval-fields dd { margin: 0 0 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.citation-ref { border: 0; padding: 0 3px; color: var(--accent); background: transparent; text-decoration: underline; }
+.citations { margin-top: 12px; border-top: 1px solid var(--border); padding-top: 8px; }
+.citation { padding: 8px 0; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
+.citation > summary { cursor: pointer; color: var(--accent); }
+.citation blockquote { margin: 8px 0; padding-left: 8px; border-left: 2px solid var(--border); white-space: pre-wrap; }
+.citation .btn { margin-top: 8px; }
+.citation-status { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+.citation-status:empty { display: none; }
+
 
 .quick { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 8px 8px 12px; border-bottom: 1px solid var(--border); }
 .chip { border: 1px solid var(--border); background: var(--panel); border-radius: 999px; padding: 3px 11px; }

@@ -323,6 +323,7 @@
   }
   function clearOverlay() {
     overlayHost?.remove();
+    for (const done of [...highlights]) done();
     overlayHost = null;
   }
   function box(rect, { color = "#FFD400", label = null, width = 3 } = {}) {
@@ -781,6 +782,234 @@
     return { ok: true, row: el.tagName === "TR" };
   }
 
+  function passageStreams() {
+    const streams = [];
+    let stream;
+    const separate = () => {
+      stream = { parts: [], entries: [], length: 0, space: false };
+      streams.push(stream);
+    };
+    const space = () => {
+      if (stream.length && !stream.space) {
+        stream.parts.push(" ");
+        stream.length++;
+        stream.space = true;
+      }
+    };
+    separate();
+
+    function walk(node) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        const raw = node.nodeValue;
+        if (!raw) return;
+        if (raw.trim()) {
+          const range = document.createRange();
+          range.selectNodeContents(node);
+          if (![...range.getClientRects()].some((r) => r.width > 0 && r.height > 0)) return separate();
+        }
+        const from = stream.space ? raw.match(/^\s*/)[0].length : 0;
+        const text = raw.slice(from).replace(/\s+/g, " ");
+        if (!text) return;
+        stream.entries.push({ node, raw, from, start: stream.length, length: text.length });
+        stream.parts.push(text);
+        stream.length += text.length;
+        stream.space = text.endsWith(" ");
+        return;
+      }
+      if (node.nodeType !== Node.ELEMENT_NODE) return;
+      const el = node;
+      const style = getComputedStyle(el);
+      if (SKIP.has(el.tagName) || ["INPUT", "TEXTAREA", "SELECT", "OPTION"].includes(el.tagName) ||
+          el.isContentEditable || ["textbox", "searchbox", "combobox"].includes(el.getAttribute("role")) ||
+          el.hasAttribute("data-pagemortem-ui") || el.getAttribute("aria-hidden") === "true" ||
+          style.display === "none" || style.visibility === "hidden" || style.visibility === "collapse" ||
+          style.contentVisibility === "hidden" || Number(style.opacity) === 0) return separate();
+      if (el.tagName === "BR") return space();
+      const block = !["inline", "contents"].includes(style.display) && !style.display.startsWith("inline-");
+      if (block) space();
+      if (el.shadowRoot) {
+        separate();
+        for (const child of el.childNodes) walk(child);
+        separate();
+        for (const child of el.shadowRoot.childNodes) walk(child);
+        separate();
+      } else if (el.tagName === "SLOT" && el.assignedNodes?.().length) {
+        separate();
+      } else {
+        for (const child of el.childNodes) walk(child);
+      }
+      if (block) space();
+    }
+
+    if (document.body) walk(document.body);
+    return streams;
+  }
+
+  function passageOffset(entry, offset) {
+    let raw = entry.from;
+    for (let normalized = 0; normalized < offset; normalized++) {
+      if (/\s/.test(entry.raw[raw])) {
+        do { raw++; } while (raw < entry.raw.length && /\s/.test(entry.raw[raw]));
+      } else raw++;
+    }
+    return raw;
+  }
+
+  function passageRange(quote) {
+    let match = null;
+    for (const stream of passageStreams()) {
+      const text = stream.parts.join("");
+      const start = text.indexOf(quote);
+      if (start < 0) continue;
+      if (match || text.indexOf(quote, start + 1) >= 0) {
+        throw new Error("This quote appears more than once on the page. Use a longer, unique quote.");
+      }
+      const end = start + quote.length;
+      const starts = stream.entries.map((entry) => entry.start);
+      const first = lastAtOrBefore(starts, start);
+      const last = lastAtOrBefore(starts, end - 1);
+      const a = stream.entries[first];
+      const b = stream.entries[last];
+      const range = document.createRange();
+      range.setStart(a.node, passageOffset(a, start - a.start));
+      range.setEnd(b.node, passageOffset(b, end - b.start));
+      match = { range, entries: stream.entries.slice(first, last + 1) };
+    }
+    if (!match) throw new Error("The quoted passage is missing or hidden on this page. Read the page again.");
+    return match;
+  }
+
+  const passageParent = (el) => el.assignedSlot || el.parentElement || el.getRootNode().host;
+
+  function passageRects({ range, entries }) {
+    const rects = [];
+    for (const entry of entries) {
+      const part = document.createRange();
+      part.selectNodeContents(entry.node);
+      if (entry.node === range.startContainer) part.setStart(entry.node, range.startOffset);
+      if (entry.node === range.endContainer) part.setEnd(entry.node, range.endOffset);
+      const clip = { left: 0, top: 0, right: innerWidth, bottom: innerHeight };
+      for (let el = entry.node.parentElement; el; el = passageParent(el)) {
+        const style = getComputedStyle(el);
+        if (style.display === "none" || style.visibility === "hidden" || style.visibility === "collapse" ||
+            style.contentVisibility === "hidden" || Number(style.opacity) === 0 ||
+            el.getAttribute("aria-hidden") === "true" || el.hasAttribute("data-pagemortem-ui")) return [];
+        if (el === document.body || el === document.documentElement) continue;
+        const r = el.getBoundingClientRect();
+        if (["auto", "scroll", "hidden", "clip"].includes(style.overflowX)) {
+          clip.left = Math.max(clip.left, r.left + el.clientLeft);
+          clip.right = Math.min(clip.right, r.left + el.clientLeft + el.clientWidth);
+        }
+        if (["auto", "scroll", "hidden", "clip"].includes(style.overflowY)) {
+          clip.top = Math.max(clip.top, r.top + el.clientTop);
+          clip.bottom = Math.min(clip.bottom, r.top + el.clientTop + el.clientHeight);
+        }
+      }
+      for (const r of part.getClientRects()) {
+        const left = Math.max(r.left, clip.left);
+        const top = Math.max(r.top, clip.top);
+        const width = Math.min(r.right, clip.right) - left;
+        const height = Math.min(r.bottom, clip.bottom) - top;
+        if (width > 0 && height > 0) rects.push({ left, top, width, height });
+      }
+    }
+    return rects;
+  }
+
+  function scrollPassage(range) {
+    const target = range.startContainer.parentElement;
+    target.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+    for (let el = target; el && el !== document.body && el !== document.documentElement; el = passageParent(el)) {
+      const style = getComputedStyle(el);
+      const r = range.getClientRects()[0];
+      if (!r) return;
+      const box = el.getBoundingClientRect();
+      el.scrollBy({
+        left: ["auto", "scroll", "hidden"].includes(style.overflowX) && el.scrollWidth > el.clientWidth
+          ? r.left - box.left - el.clientLeft - (el.clientWidth - r.width) / 2 : 0,
+        top: ["auto", "scroll", "hidden"].includes(style.overflowY) && el.scrollHeight > el.clientHeight
+          ? r.top - box.top - el.clientTop - (el.clientHeight - r.height) / 2 : 0,
+        behavior: "instant",
+      });
+    }
+    const r = range.getClientRects()[0];
+    if (r) window.scrollBy({
+      left: r.left - (innerWidth - r.width) / 2,
+      top: r.top - (innerHeight - r.height) / 2,
+      behavior: "instant",
+    });
+  }
+
+  async function showPassage({ quote, url, doc }) {
+    const checkPage = () => {
+      if (typeof url !== "string" || url !== location.href) {
+        throw new Error("The page URL changed since this source was read. Read the page again.");
+      }
+      checkDoc(doc);
+    };
+    checkPage();
+    if (typeof quote !== "string" || !clean(quote)) throw new Error("Give a nonempty quoted passage to show.");
+    quote = clean(quote);
+    let passage = passageRange(quote);
+    scrollPassage(passage.range);
+    await nextPaint();
+    checkPage();
+    passage = passageRange(quote);
+    if (!passageRects(passage).length) throw new Error("The quoted passage is no longer visible. Read the page again.");
+    const target = passage.range.startContainer.parentElement;
+
+    const root = overlayRoot();
+    const boxes = [];
+    let frame = 0;
+    const scrollRoots = new Set([window]);
+    for (let el = target; el; el = passageParent(el)) {
+      const tree = el.getRootNode();
+      if (tree instanceof ShadowRoot) scrollRoots.add(tree);
+    }
+    const place = () => {
+      frame = 0;
+      if (!root.host.isConnected || location.href !== url ||
+          passage.entries.some((entry) => !entry.node.isConnected || entry.node.nodeValue !== entry.raw)) return done();
+      const rects = passageRects(passage);
+      if (!rects.length) return done();
+      while (boxes.length > rects.length) boxes.pop().remove();
+      rects.forEach((r, i) => {
+        const b = boxes[i] ||= box(r, { color: "#F97316", width: 2 });
+        Object.assign(b.style, {
+          left: r.left + "px", top: r.top + "px", width: r.width + "px", height: r.height + "px",
+          background: "rgba(249, 115, 22, 0.22)",
+        });
+      });
+    };
+    const onMove = () => (frame ||= requestAnimationFrame(place));
+    const resized = new ResizeObserver(onMove);
+    const done = () => {
+      for (const b of boxes) b.remove();
+      cancelAnimationFrame(frame);
+      clearTimeout(timer);
+      for (const tree of scrollRoots) tree.removeEventListener("scroll", onMove, true);
+      removeEventListener("resize", onMove);
+      resized.disconnect();
+      highlights.delete(done);
+      if (!highlights.size) {
+        removeEventListener("pointerdown", dismissHighlights, true);
+        removeEventListener("keydown", dismissHighlights, true);
+      }
+    };
+    const timer = setTimeout(done, 30000);
+    if (!highlights.size) {
+      addEventListener("pointerdown", dismissHighlights, true);
+      addEventListener("keydown", dismissHighlights, true);
+    }
+    highlights.add(done);
+    for (const tree of scrollRoots) tree.addEventListener("scroll", onMove, { capture: true, passive: true });
+    addEventListener("resize", onMove, { passive: true });
+    resized.observe(document.body);
+    resized.observe(target);
+    place();
+    return { ok: true };
+  }
+
   async function rectOf({ id, doc }) {
     checkDoc(doc);
     const el = getEl(id);
@@ -858,7 +1087,7 @@
         .join("\n")
         .replace(/\n{3,}/g, "\n\n")
         .trim();
-      return { ...pageMeta(), selection: String(getSelection() || "").trim(), text: text.slice(0, maxChars), length: text.length };
+      return { ...pageMeta(), selection: String(getSelection() || "").trim(), text: text.slice(0, maxChars), length: text.length, doc: DOC };
     },
     describe: ({ id, doc }) => (checkDoc(doc), describe(getEl(id))),
     click,
@@ -868,6 +1097,7 @@
     pressKey,
     waitFor,
     highlight,
+    showPassage,
     rect: rectOf,
     markImages,
     listImages,

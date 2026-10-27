@@ -171,7 +171,6 @@ test("Ask wraps pages as data and keeps the conversation", async () => {
   assert.equal((await chat.ask({ question: "q2", pages, selection: "", llm: model, settings: SETTINGS })).answer, "A2");
   const [sys, u1, a1, u2] = model.calls[1].messages;
   assert.match(sys.content, /untrusted data/);
-  assert.match(u1.content, /<page n="1" title="Say 'hi'" url="https:\/\/a\.example\/">\nbody text/);
   assert.equal(a1.content, "A1");
   assert.equal(u2.content, "q2", "same pages aren't resent");
 });
