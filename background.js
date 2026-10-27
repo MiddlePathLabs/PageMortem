@@ -6,6 +6,11 @@ browser.action.onClicked.addListener(() => {
   browser.sidebarAction.toggle();
 });
 
+// Each tab keeps its sidebar conversation (lib/threads.js) until it closes.
+browser.tabs.onRemoved.addListener((tabId) => {
+  browser.storage.session.remove(`thread:${tabId}`).catch(() => {});
+});
+
 const MENU = [
   { id: "pagemortem-translate", title: "Translate selection", contexts: ["selection"] },
   { id: "pagemortem-ask", title: "Ask about selection…", contexts: ["selection"] },

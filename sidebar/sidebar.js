@@ -15,6 +15,8 @@ const state = {
   windowId: null,
   mode: "ask",
   running: null, // { stop() }
+  // The active tab's conversation; chat, sessionGrants, contextPages and excludedPages below are its parts.
+  thread: null,
   chat: new Chat(),
   translated: new Set(), // tab ids translated in place
   confirms: new Set(), // resolvers of open approval prompts
@@ -88,10 +90,11 @@ function showWelcome() {
   log.append(w);
 }
 
-function addUser(text) {
+function addUser(text, { replay = false } = {}) {
   log.querySelector(".welcome")?.remove();
   log.append(el("div", "msg user", text));
   scrollDown(true);
+  if (!replay) record({ kind: "user", text });
 }
 
 /** A "Show on page" button that highlights a quote in its source tab, with a status line for the outcome. */
@@ -354,8 +357,17 @@ function renderCitedAnswer(body, text, links, sources, final) {
   }
 }
 
-function addBot({ agent = false } = {}) {
+/** replay: draw a stored reply (replayBot) without recording it again. */
+function addBot({ agent = false, replay = false } = {}) {
   log.querySelector(".welcome")?.remove();
+  // What happens to the reply, as [method, ...args], so it can be drawn again after the sidebar reopens.
+  const entry = replay ? null : record({ kind: "bot", agent, ops: [], done: false });
+  const op = (...args) => {
+    if (!entry) return args;
+    entry.ops.push(args);
+    saveSoon();
+    return args;
+  };
   const wrap = el("div", "msg bot");
   let steps = null, list = null, summary = null, count = 0, lastLi = null;
   if (agent) {
@@ -382,22 +394,29 @@ function addBot({ agent = false } = {}) {
     body.replaceChildren(...markdownNodes(md, { links }));
     if (final && evidenceSources) attachEvidence(body, evidenceSources);
   };
-  let frame = 0, pendingText = "";
+  let frame = 0, pendingText = "", stepCount = 0;
   const api = {
     /** Origins the answer may link to (a live Set is fine: the agent adds pages as it reads them). */
     links(origins) {
       links = origins;
+      op("links", origins);
     },
     /** Agent answers: sources for the model's own [[cite:…]] markup. */
     citations(records) {
       sources = records.slice();
+      op("citations", sources);
     },
     /** Ask and Summarize answers: page texts to find each point's source in, on request. */
     evidence(records) {
       evidenceSources = records.slice();
+      op("evidence", evidenceSources);
     },
     stream(text) {
       pendingText = text;
+      if (entry) {
+        entry.partial = text;
+        saveSoon();
+      }
       if (frame) return;
       frame = requestAnimationFrame(() => {
         frame = 0;
@@ -409,14 +428,18 @@ function addBot({ agent = false } = {}) {
       frame = 0;
       show(text || "_(empty reply)_", true);
       scrollDown();
+      if (entry) delete entry.partial;
+      op("set", text);
     },
     note(text) {
       extra.append(el("div", "dimline", text));
+      op("note", text);
     },
     /** Speed and token counts for the whole run, under the reply. */
     stats(meter) {
       const s = state.settings.showStats && meter.summary();
       if (!s) return;
+      op("stats", s);
       wrap.querySelector(":scope > .stats")?.remove();
       const line = el("div", "stats", s.text);
       if (s.title) line.title = s.title;
@@ -435,13 +458,22 @@ function addBot({ agent = false } = {}) {
         lastLi = li;
       }
       scrollDown();
+      const n = stepCount++;
+      op("step", icon, text, { dim });
       return {
-        update: (t) => (tx.textContent = t),
-        ok: () => li.classList.remove("running"),
+        update: (t) => {
+          tx.textContent = t;
+          op("stepText", n, t);
+        },
+        ok: () => {
+          li.classList.remove("running");
+          op("stepOk", n);
+        },
         fail: (m) => {
           li.classList.remove("running");
           li.classList.add("fail");
           li.append(el("div", "err", m));
+          op("stepFail", n, m);
         },
       };
     },
@@ -479,20 +511,16 @@ function addBot({ agent = false } = {}) {
      */
     confirm({ title, detail, actionLabel = "Allow action", fields = [], allowAll = null, remember = null, permissions = null, permissionsOptional = false }) {
       return new Promise((resolve) => {
-        const card = el("section", "confirm");
-        card.setAttribute("aria-label", title);
-        card.append(el("div", "title", title), el("div", "detail", detail || ""));
-        if (fields.length) {
-          const preview = el("dl", "approval-fields");
-          for (const field of fields) preview.append(el("dt", null, field.label), el("dd", null, field.value));
-          card.append(preview);
-        }
+        const card = confirmCard({ title, detail, fields });
+        const recorded = op("confirm", { title, detail, fields }, null);
         const row = el("div", "row");
         const finish = (ans, label) => {
           if (!state.confirms.has(finish)) return;
           state.confirms.delete(finish);
           card.classList.add("answered");
           card.append(el("div", "dimline", label));
+          recorded[2] = label;
+          saveSoon();
           resolve(ans);
         };
         const mk = (label, ans, cls, after) => {
@@ -520,6 +548,13 @@ function addBot({ agent = false } = {}) {
         row.lastChild.focus();
       });
     },
+    /** An approval card from a stored reply, with how it was answered. */
+    pastConfirm(details, label) {
+      const card = confirmCard(details);
+      card.classList.add("answered");
+      card.append(el("div", "dimline", label || "Not answered: the sidebar was closed"));
+      (list ? list.parentElement : extra).after(card);
+    },
     progress(done, total, label) {
       let bar = wrap.querySelector(".progress > div");
       if (!bar) {
@@ -534,7 +569,9 @@ function addBot({ agent = false } = {}) {
     error(e) {
       lastLi?.classList.remove("running");
       const box = el("div", "error", e.message || String(e));
-      if (e instanceof LLMError) {
+      const settingsProblem = e instanceof LLMError || !!e.llm;
+      op("error", e.message || String(e), settingsProblem);
+      if (settingsProblem) {
         const row = el("div", "row");
         const b = el("button", "btn", "Open settings");
         b.addEventListener("click", () => browser.runtime.openOptionsPage());
@@ -545,6 +582,7 @@ function addBot({ agent = false } = {}) {
       scrollDown();
     },
     finish() {
+      op("finish");
       lastLi?.classList.remove("running");
       if (steps) {
         summary.textContent = `${count} step${count === 1 ? "" : "s"}`;
@@ -553,6 +591,117 @@ function addBot({ agent = false } = {}) {
     },
   };
   return api;
+}
+
+function confirmCard({ title, detail, fields = [] }) {
+  const card = el("section", "confirm");
+  card.setAttribute("aria-label", title);
+  card.append(el("div", "title", title), el("div", "detail", detail || ""));
+  if (fields.length) {
+    const preview = el("dl", "approval-fields");
+    for (const field of fields) preview.append(el("dt", null, field.label), el("dd", null, field.value));
+    card.append(preview);
+  }
+  return card;
+}
+
+/** Draws a stored reply again; one cut off by the sidebar closing shows how far it got. */
+function replayBot(entry) {
+  const bot = addBot({ agent: entry.agent, replay: true });
+  const steps = [];
+  for (const [method, ...args] of entry.ops) {
+    if (method === "links") bot.links(new Set(args[0]));
+    else if (method === "step") steps.push(bot.step(...args));
+    else if (method === "stepText") steps[args[0]]?.update(args[1]);
+    else if (method === "stepOk") steps[args[0]]?.ok();
+    else if (method === "stepFail") steps[args[0]]?.fail(args[1]);
+    else if (method === "stats") bot.stats({ summary: () => args[0] });
+    else if (method === "error") bot.error({ message: args[0], llm: args[1] });
+    else if (method === "confirm") bot.pastConfirm(args[0], args[1]);
+    else if (["citations", "evidence", "set", "note", "finish"].includes(method)) bot[method](...args);
+  }
+  // Stopped runs end without a reply: show what had streamed in.
+  if (!entry.ops.some(([method]) => method === "set" || method === "error")) bot.set(entry.partial || "_(no reply)_");
+  if (!entry.interrupted) return;
+  bot.note("Interrupted: the sidebar was closed before this finished.");
+  if (entry.agent) bot.finish();
+}
+
+// ---------- per-tab conversations (lib/threads.js) ----------
+// Each tab has its own conversation, kept in storage.session until the tab or the browser closes. The sidebar shows
+// the active tab's, but never switches during a run: a run's replies stay with the tab it started on, and the
+// sidebar follows the active tab again at the next tab switch.
+const grantsByTab = new Map(); // "Always allow" choices stay in memory: closing the sidebar forgets them
+let saveTimer = 0;
+let threadVersion = 0;
+
+function record(entry) {
+  state.thread?.entries.push(entry);
+  saveSoon();
+  return entry;
+}
+
+function saveSoon() {
+  if (state.thread && !saveTimer) saveTimer = setTimeout(saveNow, 1000);
+}
+
+const tabInfo = (tab) => tab && { id: tab.id, url: tab.url, title: tab.title };
+
+function contextSnapshot() {
+  const max = state.settings?.maxPageChars || 24000; // no more than this is ever sent for one page
+  const page = (p) => p && { ...p, tab: tabInfo(p.tab), text: p.text?.slice(0, max) };
+  return {
+    pages: [...state.contextPages].map(([key, e]) => [key, { ...e, tab: tabInfo(e.tab), page: page(e.page) }]),
+    excluded: [...state.excludedPages],
+  };
+}
+
+function saveNow() {
+  clearTimeout(saveTimer);
+  saveTimer = 0;
+  const thread = state.thread;
+  if (!thread) return Promise.resolve();
+  const context = contextSnapshot();
+  if (!thread.entries.length && !context.pages.some(([, e]) => e.pinned)) return removeThread(thread.tabId).catch(() => {});
+  // storeThread copies the thread before its first await, so later changes don't leak into this write.
+  return storeThread({ tabId: thread.tabId, updated: Date.now(), entries: thread.entries, chat: state.chat.snapshot(), context })
+    .catch((e) => console.warn("PageMortem: couldn't keep this conversation", e));
+}
+
+async function showThread(tabId) {
+  if (state.thread?.tabId === tabId) return;
+  const version = ++threadVersion;
+  saveNow();
+  const stored = await loadThread(tabId).catch(() => null);
+  if (version !== threadVersion || state.running) return;
+  const entries = stored?.entries || [];
+  for (const entry of entries) {
+    if (entry.kind === "bot" && !entry.done) Object.assign(entry, { done: true, interrupted: true });
+  }
+  state.thread = { tabId, entries };
+  state.chat.restore(stored?.chat);
+  state.contextPages.clear();
+  for (const [key, entry] of stored?.context?.pages || []) state.contextPages.set(key, entry);
+  state.excludedPages.clear();
+  for (const key of stored?.context?.excluded || []) state.excludedPages.add(key);
+  if (!grantsByTab.has(tabId)) grantsByTab.set(tabId, new Set());
+  state.sessionGrants = grantsByTab.get(tabId);
+  contextVersion++; // a context read still running belongs to the previous tab
+  state.contextBusy = false;
+  $("contextStatus").textContent = "";
+
+  log.replaceChildren();
+  evidenceAnswers.clear();
+  for (const entry of entries) entry.kind === "user" ? addUser(entry.text, { replay: true }) : replayBot(entry);
+  if (!entries.length) showWelcome();
+  scrollDown(true);
+  refreshContext();
+}
+
+async function followActiveTab() {
+  if (state.running) return;
+  const tab = await activeTab();
+  if (tab) await showThread(tab.id);
 }
 
 // ---------- running state ----------
@@ -578,6 +727,8 @@ async function guard(fn) {
     await fn();
   } finally {
     setRunning(null);
+    for (const entry of state.thread?.entries || []) if (entry.kind === "bot") entry.done = true;
+    saveNow();
     refreshContext();
   }
 }
@@ -827,6 +978,7 @@ function contextButton(label, action) {
 }
 
 function renderContext() {
+  saveSoon(); // sources belong to the tab's conversation
   const entries = [...state.contextPages.values()];
   const count = entries.length;
   const selectionCount = entries.filter((entry) => entry.page?.selection && !entry.selectionExcluded).length;
@@ -1012,8 +1164,10 @@ async function init() {
     if (!state.keepPages) resetContextHistory("Earlier unpinned pages will no longer be kept.");
     refreshContext();
   });
-  showWelcome();
-  refreshContext();
+  pruneThreads().catch(() => {});
+  await followActiveTab();
+  if (!state.thread) showWelcome();
+  addEventListener("pagehide", saveNow); // closing the sidebar: keep what the last second added
 
   $("send").addEventListener("click", send);
   $("input").addEventListener("keydown", (e) => {
@@ -1065,13 +1219,19 @@ async function init() {
     state.contextPages.clear();
     state.excludedPages.clear();
     $("contextStatus").textContent = "";
+    if (state.thread) state.thread.entries = [];
+    saveNow();
     refreshContext();
     showWelcome();
   });
   $("openSettings").addEventListener("click", () => browser.runtime.openOptionsPage());
 
   const mine = (info) => info.windowId === state.windowId;
-  browser.tabs.onActivated.addListener((i) => mine(i) && refreshContext());
+  browser.tabs.onActivated.addListener((i) => {
+    if (!mine(i)) return;
+    followActiveTab();
+    refreshContext();
+  });
   browser.tabs.onHighlighted.addListener((i) => mine(i) && refreshContext());
   browser.tabs.onUpdated.addListener((id, change, tab) => {
     if (change.status === "loading") state.translated.delete(id);
