@@ -479,8 +479,10 @@
   function describe(el) {
     const kind = kindOf(el) || (el.tagName === "IMG" ? "image" : el.tagName.toLowerCase());
     const link = el.closest("a[href]");
-    const form = el.closest("form");
+    // The form owner, which form="id" can place outside the <form>; elements without one (divs) use their ancestor.
+    const form = el.form !== undefined ? el.form : el.closest("form");
     const type = (el.getAttribute("type") || "").toLowerCase();
+    const isSubmit = el.tagName === "BUTTON" ? type === "submit" || (!type && !!form) : type === "submit" || type === "image";
     return {
       kind,
       tag: el.tagName,
@@ -488,8 +490,9 @@
       href: link ? new URL(link.getAttribute("href"), location.href).href : "",
       download: !!link?.hasAttribute("download"),
       inForm: !!form,
-      formMethod: (form?.getAttribute("method") || "get").toLowerCase(),
-      isSubmit: el.tagName === "BUTTON" ? type === "submit" || (!type && !!form) : type === "submit" || type === "image",
+      // A submit button's formmethod overrides its form's method.
+      formMethod: ((isSubmit && el.getAttribute("formmethod")) || form?.getAttribute("method") || "get").toLowerCase(),
+      isSubmit,
       sensitive: isSensitive(el),
       visible: isVisible(el),
       disabled: !!el.disabled || el.getAttribute("aria-disabled") === "true",

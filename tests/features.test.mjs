@@ -43,6 +43,34 @@ test("follow-ups on the same page keep the conversation, even when the selection
   assert.match(sentText(model), /q1[\s\S]*one headline[\s\S]*q2/);
 });
 
+test("a follow-up on the same address sends the page again when its contents changed, and drops the old copy", async () => {
+  const ctx = lib();
+  const chat = new (ctx.$("Chat"))();
+  const model = scriptedModel([{ content: "A" }, { content: "B" }, { content: "C" }]);
+  const shop = (status) => [{ url: "https://shop.example/item", title: "Item", text: `Widget. ${status}` }];
+  await chat.ask({ question: "in stock?", pages: shop("Out of stock"), selection: "", llm: model, settings: SETTINGS });
+  const r = await chat.ask({ question: "now?", pages: shop("In stock"), selection: "", llm: model, settings: SETTINGS });
+  assert.equal(r.fresh, false);
+  assert.match(sentText(model), /in stock\?[\s\S]*Widget\. In stock[\s\S]*now\?/);
+  assert.doesNotMatch(sentText(model), /Out of stock/);
+  await chat.ask({ question: "price?", pages: shop("In stock"), selection: "", llm: model, settings: SETTINGS });
+  assert.equal(model.calls[2].messages.at(-1).content, "price?", "unchanged contents aren't resent");
+});
+
+test("trimming drops whole old turns and keeps the latest page context", () => {
+  const ctx = lib();
+  const chat = new (ctx.$("Chat"))();
+  chat.history = [
+    { role: "user", content: "x".repeat(50), hasContext: false },
+    { role: "assistant", content: "y".repeat(50) },
+    { role: "user", content: "CTX" + "z".repeat(100), hasContext: true },
+    { role: "assistant", content: "a".repeat(50) },
+    { role: "user", content: "q".repeat(10), hasContext: false },
+  ];
+  chat.trim(120);
+  assert.deepEqual(chat.history.map((m) => m.content.slice(0, 3)), ["CTX", "aaa", "qqq"]);
+});
+
 // ---------- speed stats ----------
 const TIMINGS = { prompt_n: 19, predicted_n: 4, prompt_ms: 94.3, predicted_ms: 97, prompt_per_second: 201.5, predicted_per_second: 41.2, cache_n: 0, draft_n: 2, draft_n_accepted: 1 };
 

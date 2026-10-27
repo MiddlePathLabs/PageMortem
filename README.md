@@ -61,7 +61,7 @@ npm test                                                     # offline: agent po
 PAGEMORTEM_ENDPOINT=http://<server>:<port>/v1 npm run test:live # also exercises a real model server
 ```
 
-The tests run the extension's own scripts in Node with a simulated browser. They don't exercise Firefox itself (CSP enforcement, permissions, the real content script DOM code); check those by loading the extension.
+The tests run the extension's own scripts in Node with a simulated browser (the content script runs against a minimal fake DOM). They don't exercise Firefox itself (CSP enforcement, permissions, real DOM and event behaviour); check those by loading the extension.
 
 ## Files
 
