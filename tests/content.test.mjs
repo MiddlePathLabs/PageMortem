@@ -29,6 +29,10 @@ class El {
     const m = /^(\w*)(?:\[(\w+)(?:=(\w+))?\])?$/.exec(sel);
     return (!m[1] || this.tagName === m[1].toUpperCase()) && (!m[2] || (m[3] ? this.attrs[m[2]] === m[3] : m[2] in this.attrs));
   }
+  contains(e) {
+    for (; e; e = e.parentElement) if (e === this) return true;
+    return false;
+  }
   closest(sel) {
     for (let e = this; e; e = e.parentElement) if (e.tagName && e.matches(sel)) return e;
     return null;
@@ -39,13 +43,16 @@ class El {
     return this.closest("form");
   }
   get innerText() {
-    return this.childNodes.map((c) => (c.nodeType === 3 ? c.nodeValue : c.innerText)).join("");
+    return this.childNodes.map((c) => (c.nodeType === 3 ? c.nodeValue : c.checkVisibility() ? c.innerText : "")).join("");
   }
   get type() {
     return this.attrs.type || (this.tagName === "BUTTON" ? "submit" : "text");
   }
   checkVisibility() {
-    return true;
+    return !("hidden" in this.attrs);
+  }
+  get textContent() {
+    return this.childNodes.map((c) => (c.nodeType === 3 ? c.nodeValue : c.textContent)).join("");
   }
   // Just enough of the DOM for actions: `on[type]` handlers stand in for page listeners.
   querySelectorAll(sel) {
@@ -320,4 +327,17 @@ test("page text for Ask and Summarize leaves out editable regions that hold cred
   assert.match(text, /\[sensitive field omitted\]/);
   assert.match(text, /Save these somewhere safe/);
   assert.match(text, /ordinary notes/);
+});
+
+test("a label hidden by the layout is shown next to the visible one and can be found", async () => {
+  const p = page(new El("body", {}, [
+    new El("a", { href: "/repo/tree/main" }, [new El("span", {}, ["Files"]), new El("span", { hidden: "" }, ["Files and versions"])]),
+    new El("a", { href: "/repo" }, [new El("span", {}, ["Model card"])]),
+  ]));
+  const { text } = await p.send("readPage", {});
+  assert.match(text, /link "Files" \(also "Files and versions"\) → \S*\/repo\/tree\/main/);
+  assert.doesNotMatch(text, /Model card" \(also/);
+  const found = await p.send("find", { query: "files and versions" });
+  assert.equal(found.total, 1);
+  assert.equal(found.matches[0].kind, "link");
 });

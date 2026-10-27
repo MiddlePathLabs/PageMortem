@@ -105,6 +105,25 @@
 
   // ---------- page serialization ----------
   const SKIP = new Set(["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE", "svg", "SVG", "CANVAS", "IFRAME", "OBJECT", "EMBED", "HEAD", "LINK", "META"]);
+
+  /** Text inside el that the current layout hides, e.g. the long form of a label shown only on wide screens. */
+  function hiddenText(el) {
+    const out = [];
+    let len = 0;
+    const visit = (node) => {
+      for (const c of node.childNodes) {
+        if (len > 200) return;
+        if (c.nodeType !== Node.ELEMENT_NODE || SKIP.has(c.tagName) || c.getAttribute("aria-hidden") === "true") continue;
+        if (isVisible(c)) visit(c);
+        else {
+          const t = clean(c.textContent);
+          if (t) out.push(t), (len += t.length);
+        }
+      }
+    };
+    visit(el);
+    return clean(out.join(" "));
+  }
   const BLOCK = new Set([
     "P", "DIV", "SECTION", "ARTICLE", "MAIN", "HEADER", "FOOTER", "NAV", "ASIDE", "UL", "OL", "TABLE", "THEAD", "TBODY",
     "BLOCKQUOTE", "FORM", "FIELDSET", "DL", "DT", "DD", "FIGURE", "FIGCAPTION", "DETAILS", "HR", "ADDRESS",
@@ -134,8 +153,12 @@
       const id = getId(el);
       const label = labelOf(el);
       let s = `[${id} ${kind}`;
+      // Responsive sites swap labels by screen width ("Files" / "Files and versions"); the hidden one is what the
+      // model may know the control by, so it is shown and searchable.
+      let alt = ["link", "button", "tab", "menuitem"].includes(kind) ? hiddenText(el) : "";
+      alt = alt && !label.toLowerCase().includes(alt.toLowerCase()) ? ` (also "${clip(alt, 80)}")` : "";
       if (kind === "link") {
-        s += ` "${clip(label, 120)}"`;
+        s += ` "${clip(label, 120)}"${alt}`;
         const h = shortHref(el.getAttribute("href"));
         if (h) s += ` → ${h}`;
       } else if (kind === "input") {
@@ -151,7 +174,7 @@
         const on = el.checked ?? el.getAttribute("aria-checked") === "true";
         s += ` "${clip(label, 80)}"${on ? " checked" : ""}`;
       } else {
-        s += ` "${clip(label, 80)}"`;
+        s += ` "${clip(label, 80)}"${alt}`;
         if (el.getAttribute("aria-expanded")) s += el.getAttribute("aria-expanded") === "true" ? " expanded" : " collapsed";
         if (el.getAttribute("aria-selected") === "true") s += " selected";
       }
