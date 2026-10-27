@@ -177,14 +177,32 @@ test("a skill folder keeps SKILL.md and its other files, and drops the wrapper d
   assert.match(parseSkillBundle([{ path: "notes/readme.md", text: "x" }]).error, /SKILL.md/);
 });
 
-test("a prompt skill's files must fit in one request, and a folder over that is refused with a way out", () => {
+test("a prompt skill's files must fit in one request, and a folder import keeps every file and picks agent for references", () => {
   const { parseSkillBundle, normalizeSkill } = skills();
   const files = [1, 2].map((n) => ({ path: `references/r${n}.md`, text: "R".repeat(9000) }));
   assert.match(normalizeSkill({ ...caption, files }).error, /Make it an agent skill/);
   assert.equal(normalizeSkill({ ...caption, kind: "agent", files }).skill.files.length, 2);
-  const parsed = parseSkillBundle([{ path: "s/SKILL.md", text: "---\nname: s\n---\nGo." }, ...files.map((f) => ({ ...f, path: `s/${f.path}` }))]);
-  assert.deepEqual(plain(parsed.skill.files.map((f) => f.path)), ["references/r1.md"], "the import keeps what fits");
-  assert.match(parsed.skipped.join(" "), /r2.md/);
+  const folder = (header) => [{ path: "s/SKILL.md", text: `---\n${header}\n---\nGo.` }, ...files.map((f) => ({ ...f, path: `s/${f.path}` }))];
+
+  // A standard SKILL.md names no kind: a folder of references becomes an agent skill and keeps every file.
+  const standard = parseSkillBundle(folder("name: s"));
+  assert.equal(standard.skill.kind, "agent");
+  assert.equal(standard.kindInferred, true);
+  assert.equal(standard.skill.files.length, 2);
+  assert.equal(standard.warning, undefined);
+
+  // A header that asks for a prompt skill is kept, with every file, so switching to Agent in Settings loses nothing.
+  const prompt = parseSkillBundle(folder("name: s\nkind: prompt"));
+  assert.equal(prompt.skill.kind, "prompt");
+  assert.equal(prompt.kindInferred, undefined);
+  assert.equal(prompt.skill.files.length, 2);
+  assert.match(prompt.warning, /Make it an agent skill/);
+  assert.equal(normalizeSkill({ ...prompt.skill, kind: "agent" }).skill.files.length, 2);
+
+  // Without reference text, the default stays prompt.
+  const images = parseSkillBundle([{ path: "s/SKILL.md", text: "---\nname: s\n---\nGo." }, { path: "s/assets/a.png", image: "data:image/png;base64,aaaa" }]);
+  assert.equal(images.skill.kind, "prompt");
+  assert.equal(images.kindInferred, undefined);
 });
 
 const fileSkill = {

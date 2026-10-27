@@ -347,7 +347,9 @@ function showImported(parsed) {
   const n = parsed.skill.files?.length || 0;
   const skipped = parsed.skipped?.length ? ` Skipped: ${parsed.skipped.join("; ")}.` : "";
   const lead = existing ? `Review @${parsed.skill.name}, then save to replace it.` : "Review the skill, then add it.";
-  skillResult(`${lead}${n ? ` ${n} supporting file${n === 1 ? "" : "s"}.` : ""}${skipped}`, true);
+  const kind = parsed.kindInferred ? " Kind is Agent because the folder has reference files; agent skills read them when needed." : "";
+  const warning = parsed.warning ? ` ${parsed.warning}` : "";
+  skillResult(`${lead}${n ? ` ${n} supporting file${n === 1 ? "" : "s"}.` : ""}${kind}${warning}${skipped}`, !parsed.warning);
 }
 
 async function importSkillFiles(fileList, { folder = false } = {}) {
@@ -370,8 +372,8 @@ async function addDraftFiles(fileList) {
   // Existing files come first, so the limits leave out what was just picked, not what the skill already had.
   const byPath = new Map(draftFiles.map((file) => [file.path.toLowerCase(), file]));
   for (const file of incoming.files) byPath.set(file.path.toLowerCase(), file);
-  const total = $("skillKind").value === "prompt" ? SKILL_LIMITS.promptFiles : SKILL_LIMITS.agentFiles;
-  const merged = normalizeFiles([...byPath.values()], { total, lenient: true });
+  // Kept up to the agent limit; saving a prompt skill checks its own, lower limit.
+  const merged = normalizeFiles([...byPath.values()], { lenient: true });
   if (merged.error) return skillResult(merged.error, false);
   skipped.push(...incoming.skipped, ...merged.skipped);
   draftFiles = merged.files;
