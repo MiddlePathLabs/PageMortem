@@ -15,6 +15,7 @@ function liveAgent(sites, settings, decide = () => "no") {
   const ctx = load(AGENT_FILES, { browser, fetch, Response });
   web.addTab("https://shop.example/", { id: 1, active: true });
   ctx.processShot = async (raw, o) => globalThis.__liveCrop?.(raw, o) ?? raw;
+  ctx.decodeShot = async (raw) => raw;
   const llm = new (ctx.$("LLM"))({ ...base, ...settings });
   const ui = fakeUi(decide);
   const agent = new (ctx.$("Agent"))({ settings: { ...base, ...settings }, llm, windowId: 1, ui });

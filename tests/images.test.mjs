@@ -17,6 +17,7 @@ function gallery({ screens = SCREENS, replies, decide = () => "yes", settings, g
   if (!granted) t.web.granted.clear();
   // Screenshots and crops need a real canvas; stand in a crop that says which image it is.
   t.ctx.processShot = async (raw, { crop }) => `data:crop/${crop.rect.y}/${crop.rect.x / 100}`;
+  t.ctx.decodeShot = async (raw) => raw;
   const checks = [];
   const nameOf = (url) => {
     const [, screen, k] = /crop\/(\d+)\/(\d+)/.exec(url);

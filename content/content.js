@@ -305,18 +305,21 @@
     };
   }
 
+  /** The main content element and its innerText, measured once. */
   function readableRoot() {
-    const cands = [...document.querySelectorAll("main, article, [role=main], #content, .content")];
+    const all = document.querySelectorAll("main, article, [role=main], #content, .content");
+    // A candidate inside another never has more text than it and loses ties to it, so only the outermost are measured.
+    const cands = [...all].filter((c) => !c.parentElement?.closest("main, article, [role=main], #content, .content"));
     let best = null;
-    let bestLen = 0;
+    let bestText = "";
     for (const c of cands) {
-      const n = (c.innerText || "").length;
-      if (n > bestLen) {
+      const text = c.innerText || "";
+      if (text.length > bestText.length) {
         best = c;
-        bestLen = n;
+        bestText = text;
       }
     }
-    return best && bestLen > 600 ? best : document.body;
+    return best && bestText.length > 600 ? { root: best, text: bestText } : { root: document.body, text: document.body.innerText || "" };
   }
 
   // ---------- visual helpers (overlays live in a closed shadow root the page can't style) ----------
@@ -1129,8 +1132,7 @@
     },
     find: findText,
     getText: ({ maxChars = 300_000 }) => {
-      const root = readableRoot();
-      let raw = root.innerText || "";
+      let { root, text: raw } = readableRoot();
       // innerText leaves out typed input values but keeps editable regions and prefilled text areas; drop the ones
       // that look like credentials, as readPage does.
       for (const el of root.querySelectorAll?.("input, textarea, [contenteditable]") || []) {

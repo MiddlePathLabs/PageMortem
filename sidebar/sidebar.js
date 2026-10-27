@@ -409,7 +409,11 @@ function addBot({ agent = false, replay = false } = {}) {
     /** Ask and Summarize answers: page texts to find each point's source in, on request. */
     evidence(records) {
       evidenceSources = records.slice();
-      op("evidence", evidenceSources);
+      // A long page Summarize read in parts can be far bigger than anything else in the thread, and the thread is
+      // saved every second while a reply streams. Such sources stay with this reply only; replayed, it has no "source"
+      // buttons, as when compactThread drops them.
+      const max = state.settings?.maxPageChars || 24000;
+      if (evidenceSources.every((r) => (r.text?.length || 0) <= max)) op("evidence", evidenceSources);
     },
     stream(text) {
       pendingText = text;
@@ -1277,7 +1281,15 @@ async function init() {
   browser.tabs.onHighlighted.addListener((i) => mine(i) && refreshContext());
   browser.tabs.onUpdated.addListener((id, change, tab) => {
     if (change.status === "loading") state.translated.delete(id);
-    if (tab.windowId === state.windowId && (change.title || change.status)) refreshContext();
+    // Reread only when a page in context (or about to be: the active or highlighted tab) finished loading or moved.
+    if (tab.windowId !== state.windowId || !(change.title || change.url || change.status === "complete")) return;
+    const inContext = tab.active || tab.highlighted || [...state.contextPages.values()].some((entry) => entry.tab.id === id);
+    if (inContext && (change.url || change.status === "complete")) return refreshContext();
+    // Any other tab: only the "Choose a tab" list shows it, so update that without reading pages.
+    const i = state.contextTabs.findIndex((t) => t.id === id);
+    if (i === -1) state.contextTabs.push(tab);
+    else state.contextTabs[i] = tab;
+    if (!state.contextBusy) renderContext();
   });
   browser.storage.onChanged.addListener((changes, area) => {
     if (area !== "local" || !changes.settings) return;
