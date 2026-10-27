@@ -9,7 +9,7 @@
   // page can never act on another page that happens to reuse the same number.
   const DOC = [...crypto.getRandomValues(new Uint32Array(2))].map((n) => n.toString(36)).join("");
   const checkDoc = (doc) => {
-    if (doc && doc !== DOC) throw new Error("The page changed since it was read. Read the page again to get fresh numbers.");
+    if (doc !== DOC) throw new Error("The page changed since it was read. Read the page again to get fresh numbers.");
   };
 
   // ---------- element registry (ids are stable for the lifetime of the page) ----------
@@ -42,7 +42,9 @@
     const type = (el.getAttribute("type") || "").toLowerCase();
     const ac = (el.getAttribute("autocomplete") || "").toLowerCase();
     if (type === "password" || ac.includes("password") || ac.startsWith("cc-") || ac.includes(" cc-") || ac === "one-time-code") return true;
-    const hay = [el.name, el.id, el.getAttribute("aria-label"), el.getAttribute("placeholder"), el.labels?.[0]?.innerText]
+    // Every source labelOf can show, so a field is never displayed as "Password" with its value next to it.
+    const hay = [el.name, el.id, el.getAttribute("aria-label"), labelledBy(el), el.getAttribute("placeholder"), el.getAttribute("title"),
+      ...[...(el.labels || [])].map((l) => l.innerText)]
       .filter(Boolean)
       .join(" ")
       .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
@@ -74,8 +76,14 @@
     return null;
   }
 
+  /** Text of the elements aria-labelledby names. */
+  function labelledBy(el) {
+    return (el.getAttribute("aria-labelledby") || "").split(/\s+/).filter(Boolean)
+      .map((id) => document.getElementById(id)?.innerText || "").join(" ").trim();
+  }
+
   function labelOf(el) {
-    let s = el.getAttribute("aria-label") || "";
+    let s = el.getAttribute("aria-label") || labelledBy(el);
     if (!s && el.labels?.length) s = el.labels[0].innerText;
     if (!s && el.tagName === "INPUT" && ["submit", "button", "reset"].includes(el.type)) s = el.value;
     if (!s && el.tagName !== "SELECT" && el.tagName !== "TEXTAREA") s = el.innerText || "";
@@ -453,6 +461,8 @@
         id: getId(el),
         rect: { x, y, w: Math.min(innerWidth, r.right) - x, h: Math.min(innerHeight, r.bottom) - y },
         src: imageSource(el),
+        // What is actually displayed; the agent falls back to it when the best source is on another site.
+        shown: img?.tagName === "IMG" ? absUrl(img.currentSrc || img.getAttribute("src") || "") : imageSource(el),
         loaded: img?.tagName === "IMG" ? img.complete && img.naturalWidth > 0 : true,
         alt: clip(clean(el.getAttribute("alt") || img?.getAttribute?.("alt") || el.getAttribute("aria-label") || el.getAttribute("title") || ""), 120),
       };
@@ -486,23 +496,45 @@
     const form = el.form !== undefined ? el.form : el.closest("form");
     const type = (el.getAttribute("type") || "").toLowerCase();
     const isSubmit = el.tagName === "BUTTON" ? type === "submit" || (!type && !!form) : type === "submit" || type === "image";
-    return {
+    // A submit button's formmethod and formaction override its form's; a field's Enter submits to the form's own.
+    const formMethod = ((isSubmit && el.getAttribute("formmethod")) || form?.getAttribute("method") || "get").toLowerCase();
+    let action = "";
+    if (form) {
+      const raw = (isSubmit && el.getAttribute("formaction")) || form.getAttribute("action") || location.href;
+      try {
+        action = new URL(raw, document.baseURI || location.href).href;
+      } catch {
+        action = raw;
+      }
+    }
+    const info = {
       kind,
       tag: el.tagName,
       label: clip(labelOf(el), 120),
       href: link ? new URL(link.getAttribute("href"), location.href).href : "",
       download: !!link?.hasAttribute("download"),
       inForm: !!form,
-      // A submit button's formmethod overrides its form's method.
-      formMethod: ((isSubmit && el.getAttribute("formmethod")) || form?.getAttribute("method") || "get").toLowerCase(),
+      formMethod,
+      action,
       isSubmit,
       sensitive: isSensitive(el),
       visible: isVisible(el),
       disabled: !!el.disabled || el.getAttribute("aria-disabled") === "true",
       readOnly: !!el.readOnly,
-      searchField: type === "search" || el.getAttribute("role") === "searchbox" || !!el.closest("[role=search]"),
+      // Only the field itself, or a GET form that calls itself a search, makes a search box. A role on some ancestor
+      // (even <body role=search>) doesn't, and nothing that posts data is a search.
+      searchField: el.tagName === "INPUT" && ["", "text", "search"].includes(type) && formMethod !== "post" &&
+        (type === "search" || el.getAttribute("role") === "searchbox" || form?.getAttribute("role") === "search"),
       doc: DOC,
     };
+    // What the agent approved. Actions compare it again right before they activate anything.
+    info.fp = JSON.stringify([info.kind, info.tag, info.label, info.href, info.download, info.inForm, formMethod, action, isSubmit, info.sensitive]);
+    return info;
+  }
+
+  /** Refuse when the page has changed what the element is or does since the agent approved it. */
+  function checkSame(el, expect) {
+    if (expect && describe(el).fp !== expect) throw new Error("The element changed before the action, so nothing was done. Read the page again.");
   }
 
   /** Refuse to act on elements a user couldn't act on either. */
@@ -517,29 +549,34 @@
     setTimeout(() => b.remove(), 900);
   }
 
-  async function click({ id, doc }) {
+  // `expect` is the fingerprint the agent approved. Page handlers run at every await and dispatched event, so it is
+  // checked again after each, and last immediately before the activation.
+  async function click({ id, doc, expect }) {
     checkDoc(doc);
     const el = getEl(id);
     actionable(el, id);
     el.scrollIntoView({ block: "center", inline: "nearest" });
     await nextPaint();
+    checkSame(el, expect);
     flash(el);
     const opts = { bubbles: true, cancelable: true, view: window };
     el.dispatchEvent(new PointerEvent("pointerdown", opts));
     el.dispatchEvent(new MouseEvent("mousedown", opts));
     el.dispatchEvent(new PointerEvent("pointerup", opts));
     el.dispatchEvent(new MouseEvent("mouseup", opts));
+    checkSame(el, expect);
     el.click();
     return { ok: true };
   }
 
-  async function typeText({ id, text, submit = false, doc }) {
+  async function typeText({ id, text, submit = false, doc, expect }) {
     checkDoc(doc);
     const el = getEl(id);
     if (isSensitive(el)) throw new Error("Refused: this is a password/payment/ID or credential field. Ask the user to fill it in.");
     actionable(el, id);
     if (el.readOnly) throw new Error(`[${id}] is read-only.`);
     if (kindOf(el) !== "input") throw new Error(`[${id}] is not a text field.`);
+    checkSame(el, expect);
     el.scrollIntoView({ block: "center" });
     el.focus();
     if (el.isContentEditable) {
@@ -555,16 +592,20 @@
       const kd = { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true };
       const notCancelled = el.dispatchEvent(new KeyboardEvent("keydown", kd));
       el.dispatchEvent(new KeyboardEvent("keyup", kd));
-      if (notCancelled && el.form) el.form.requestSubmit ? el.form.requestSubmit() : el.form.submit();
+      if (notCancelled && el.form) {
+        checkSame(el, expect);
+        el.form.requestSubmit ? el.form.requestSubmit() : el.form.submit();
+      }
     }
     return { ok: true };
   }
 
-  function selectOption({ id, value, doc }) {
+  function selectOption({ id, value, doc, expect }) {
     checkDoc(doc);
     const el = getEl(id);
     actionable(el, id);
     if (el.tagName !== "SELECT") throw new Error(`[${id}] is not a dropdown; click it instead.`);
+    checkSame(el, expect);
     const want = clean(String(value)).toLowerCase();
     const opt =
       [...el.options].find((o) => o.value.toLowerCase() === want || clean(o.text).toLowerCase() === want) ||
@@ -630,7 +671,7 @@
    * moves, the page scrolls, Enter/Space activate controls, Enter submits a field's form. Which of these is allowed is
    * decided by the agent before this runs.
    */
-  async function pressKey({ id, key, doc }) {
+  async function pressKey({ id, key, doc, expect }) {
     checkDoc(doc);
     const el = getEl(id);
     if (isSensitive(el)) throw new Error("Refused: this is a password/payment/ID or credential field.");
@@ -640,6 +681,7 @@
     el.scrollIntoView({ block: "center", inline: "nearest" });
     el.focus({ preventScroll: true });
     await nextPaint();
+    checkSame(el, expect);
     flash(el);
     const init = { ...k, which: k.keyCode, bubbles: true, cancelable: true, composed: true, view: window };
     const notCancelled = el.dispatchEvent(new KeyboardEvent("keydown", init));
@@ -653,9 +695,13 @@
           out.focused = { id: getId(next), kind: kindOf(next) || next.tagName.toLowerCase(), label: clip(labelOf(next), 80) };
         }
       } else if (key === "Enter" && kind === "input") {
-        if (el.form && el.tagName !== "TEXTAREA") el.form.requestSubmit ? el.form.requestSubmit() : el.form.submit();
+        if (el.form && el.tagName !== "TEXTAREA") {
+          checkSame(el, expect);
+          el.form.requestSubmit ? el.form.requestSubmit() : el.form.submit();
+        }
         out.action = "submit";
       } else if ((key === "Enter" && ENTER_ACTIVATES.has(kind)) || (key === "Space" && SPACE_ACTIVATES.has(kind))) {
+        checkSame(el, expect);
         el.click();
         out.action = "activate";
       } else if (kind !== "input" && kind !== "select") {
@@ -1083,7 +1129,17 @@
     },
     find: findText,
     getText: ({ maxChars = 300_000 }) => {
-      const text = (readableRoot().innerText || "")
+      const root = readableRoot();
+      let raw = root.innerText || "";
+      // innerText leaves out typed input values but keeps editable regions and prefilled text areas; drop the ones
+      // that look like credentials, as readPage does.
+      for (const el of root.querySelectorAll?.("input, textarea, [contenteditable]") || []) {
+        const secret = isSensitive(el) ? clean(el.innerText || el.textContent || "") : "";
+        if (!secret) continue;
+        const re = new RegExp(secret.split(" ").map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+"), "g");
+        raw = raw.replace(re, "[sensitive field omitted]");
+      }
+      const text = raw
         .split("\n")
         .map((l) => l.replace(/[ \t ]+/g, " ").trim())
         .join("\n")

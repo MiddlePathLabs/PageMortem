@@ -27,12 +27,19 @@ XPI = ROOT / "pagemortem.xpi"
 PACKAGED = ("manifest.json", "background.js", "icons", "lib", "content", "sidebar", "options")
 
 
+# One host (name, IPv4 or bracketed IPv6) and an optional port: anything else could split connect-src into more sources.
+NETLOC_RE = re.compile(r"(?:[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*|\[[0-9A-Fa-f:.]+\])(?::[0-9]{1,5})?")
+
+
 def to_origin(url: str) -> str:
     raw = url.strip()
+    # urlsplit drops tab and newline but keeps other whitespace and control characters, some of which CSP splits on.
+    if any(c.isspace() or ord(c) < 0x20 or ord(c) == 0x7F for c in raw):
+        raise ValueError(f"whitespace or control characters in {url!r}")
     parts = urlsplit(raw if "://" in raw else f"http://{raw}")
     if parts.scheme not in ("http", "https") or not parts.hostname:
         raise ValueError(f"not an http(s) URL: {url!r}")
-    if any(c in parts.netloc for c in " ;'*@"):
+    if not NETLOC_RE.fullmatch(parts.netloc):
         raise ValueError(f"invalid characters in {url!r}")
     return f"{parts.scheme}://{parts.netloc}"
 

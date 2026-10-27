@@ -55,7 +55,7 @@ test("saves only the images the model says match, into a folder named after the 
   assert.ok(!checks.includes(undefined));
   assert.equal(web.downloads.filter((d) => /^(data|blob):/.test(d.url)).length, 0, "data:/blob: images are never downloaded");
   assert.ok(web.downloads.every((d) => d.saveAs === false && d.conflictAction === "uniquify"));
-  assert.deepEqual(JSON.parse(JSON.stringify(web.downloads[0].headers)), [{ name: "Referer", value: GALLERY }]);
+  assert.deepEqual(JSON.parse(JSON.stringify(web.downloads[0].headers)), [{ name: "Referer", value: "https://gallery.example/" }], "only the origin, never the path or query");
   assert.match(results(agent)[0], /Checked 6 images on gallery\.example; 3 matched “kittens chasing lasers”\. Saved 3 into Downloads\/PageMortem\/kittens-chasing-lasers\//);
 });
 
@@ -154,4 +154,30 @@ test("yes/no answers are read conservatively", () => {
   const { parseYesNo } = load(AGENT_FILES, { browser: {} });
   for (const t of ["yes", "Yes.", "**Yes** – a kitten chasing a red dot", "<think>hmm no idea</think>yes"]) assert.equal(parseYesNo(t), true, t);
   for (const t of ["no", "No.", "Not really", "I'm not sure", "", "yes and no"]) assert.equal(parseYesNo(t), false, t);
+});
+
+test("a best source on another site is ignored in favour of the image actually displayed", async () => {
+  const screens = [[
+    img("k-1", { src: "https://tracker.example/k-1.jpg", shown: "https://cdn.gallery.example/k-1-small.jpg" }), // linked file elsewhere
+    img("k-2", { src: "https://cdn.gallery.example/k-2-large.jpg", shown: "https://cdn.gallery.example/k-2.jpg" }), // own site: kept
+    img("k-3", { src: "https://other.example/k-3.jpg", shown: "https://other.example/k-3-small.jpg" }), // the host it's shown from
+    img("k-4", { src: "https://tracker.example/k-4.jpg" }), // nothing displayed to fall back to
+  ]];
+  const { run, web } = gallery({ screens, replies: [call("save_images", { match: "kittens" }), answer("done")] });
+  await run();
+  assert.deepEqual(web.downloads.map((d) => d.url), [
+    "https://cdn.gallery.example/k-1-small.jpg",
+    "https://cdn.gallery.example/k-2-large.jpg",
+    "https://other.example/k-3.jpg",
+  ]);
+});
+
+test("finished downloads with no type or an SVG type are deleted, not kept as images", async () => {
+  const { run, web, agent } = gallery({ replies: [call("save_images", { match: "kittens" }), answer("done")] });
+  web.mimeFor = (url) => (url.includes("k-1") ? "" : url.includes("k-2") ? "image/svg+xml" : "image/png");
+  await run();
+  assert.equal(web.downloads.find((d) => d.url.includes("k-1")).removed, true, "missing type");
+  assert.equal(web.downloads.find((d) => d.url.includes("k-2")).removed, true, "SVG");
+  assert.equal(web.downloads.find((d) => d.url.includes("k-3")).removed, undefined);
+  assert.match(results(agent)[0], /Saved 1 .*2 weren't image files and were removed/);
 });

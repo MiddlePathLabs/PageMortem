@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import { load, AGENT_FILES, scriptedModel, SETTINGS } from "./harness.mjs";
 
 const manifest = { content_security_policy: { extension_pages: "default-src 'self'; connect-src http://192.168.1.50:8080; object-src 'none'" } };
@@ -340,4 +341,21 @@ test("Translate page applies batches and reports untranslated pieces", async () 
   const r = await ctx.translatePage({ tabId: 1, lang: "Spanish", llm: model, settings: { ...SETTINGS, translateConcurrency: 1 } });
   assert.deepEqual(plain(r), { total: 2, done: 2, failed: 1 });
   assert.deepEqual(plain(applied), [{ i: 0, t: "Hola" }]);
+});
+
+test("siteOf ignores a trailing dot and keeps regional AWS hosts apart", () => {
+  const { siteOf } = lib();
+  assert.equal(siteOf("https://bank.com./"), "bank.com");
+  assert.equal(siteOf("https://www.bank.com./"), "bank.com");
+  assert.notEqual(siteOf("https://evil.com./"), siteOf("https://bank.com./"));
+  assert.notEqual(siteOf("https://a.s3.eu-west-1.amazonaws.com/"), siteOf("https://b.s3.eu-west-1.amazonaws.com/"));
+  assert.notEqual(siteOf("https://a.s3-website-us-east-1.amazonaws.com/"), siteOf("https://x.execute-api.us-east-1.amazonaws.com/"));
+});
+
+test("the repository manifest allows no model server until configure.py builds one", () => {
+  const real = JSON.parse(fs.readFileSync(new URL("../manifest.json", import.meta.url), "utf8"));
+  assert.match(real.content_security_policy.extension_pages, /connect-src 'none';/);
+  const { lockProblem, lockedOrigins } = load(["lib/settings.js"], { browser: { runtime: { getManifest: () => real } } });
+  assert.deepEqual(plain(lockedOrigins()), []);
+  assert.match(lockProblem("http://192.168.1.100:8080/v1"), /only allows nothing/);
 });

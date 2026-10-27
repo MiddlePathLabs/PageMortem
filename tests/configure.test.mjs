@@ -68,3 +68,13 @@ test("configure.py rejects a bad address before building anything", opts, () => 
   assert.ok(!fs.existsSync(path.join(dir, "build")));
   assert.ok(!fs.existsSync(path.join(dir, "pagemortem.xpi")));
 });
+
+test("configure.py rejects addresses that could add a second connect-src source", opts, () => {
+  const dir = project();
+  for (const bad of ["http://10.0.0.9:9000\f10.0.0.66", "http://10.0.0.9\v:9000", "http://10.0.0.9:9000 http://evil.example", "http://a b.example", "http://10.0.0.9;x", "http://u@10.0.0.9"]) {
+    const r = configure(dir, bad);
+    assert.equal(r.status, 1, JSON.stringify(bad));
+    assert.ok(!fs.existsSync(path.join(dir, "build")), "nothing built");
+  }
+  assert.equal(configure(dir, "http://[fd00::5]:8080/v1").status, 0, "a bracketed IPv6 address is fine");
+});

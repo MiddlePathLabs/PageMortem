@@ -721,12 +721,20 @@ function stopRunning() {
   state.running?.stop();
 }
 
+// One run at a time. The reservation is taken before the first await: runs set their Stop handle only after reading
+// tabs, and a second Send or Summarize in that gap would otherwise start a run nothing can stop.
 async function guard(fn) {
-  if (state.running) return;
+  if (state.running || state.reserved) return;
+  state.reserved = true;
   try {
     await fn();
   } finally {
+    state.reserved = false;
     setRunning(null);
+    if (state.settingsChanged) {
+      state.settingsChanged = false;
+      applySettings();
+    }
     for (const entry of state.thread?.entries || []) if (entry.kind === "bot") entry.done = true;
     saveNow();
     refreshContext();
@@ -917,6 +925,7 @@ async function runRestore() {
 
 function send() {
   if (state.running) return stopRunning();
+  if (state.reserved) return;
   const input = $("input");
   const text = input.value.trim();
   if (!text) return;
@@ -1271,7 +1280,10 @@ async function init() {
     if (tab.windowId === state.windowId && (change.title || change.status)) refreshContext();
   });
   browser.storage.onChanged.addListener((changes, area) => {
-    if (area === "local" && changes.settings && !state.running) applySettings();
+    if (area !== "local" || !changes.settings) return;
+    // A run keeps the settings it started with; changes made meanwhile apply when it ends.
+    if (state.running || state.reserved) state.settingsChanged = true;
+    else applySettings();
   });
   browser.runtime.onMessage.addListener((m) => {
     if (m?.type === "pagemortem:command") consumePending();

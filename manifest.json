@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "PageMortem",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Ask, summarize, translate and automate pages with your own LAN-hosted model. No other network access.",
   "browser_specific_settings": {
     "gecko": {
@@ -33,7 +33,7 @@
     "notifications"
   ],
   "content_security_policy": {
-    "extension_pages": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src http://192.168.1.50:8080; object-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'"
+    "extension_pages": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'"
   },
   "background": {
     "scripts": [

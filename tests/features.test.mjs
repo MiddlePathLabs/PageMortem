@@ -181,8 +181,9 @@ test("a remembered label doesn't cover other labels, other sites, or riskier sig
   assert.equal(other.ui.cards.length, 1, "other site must ask");
 });
 
-test("money, deletion, messages and account actions never offer “Always allow”", async () => {
-  for (const label of ["Buy now", "Delete", "Send", "Confirm", "Log out", "Add to cart", "Subscribe", "Allow notifications"]) {
+test("money, deletion, messages, account, settings and download actions never offer “Always allow”", async () => {
+  for (const label of ["Buy now", "Delete", "Send", "Confirm", "Log out", "Add to cart", "Subscribe", "Allow notifications",
+    "Close account", "Reset password", "Download", "Cancel subscription", "Disable two-factor", "Save changes", "Update profile"]) {
     const t = setup({ start: IMDB, sites: imdb(label), replies: [call("click", { id: 1 }), answer("ok")], decide: () => "no" });
     await t.run();
     assert.equal(t.ui.cards.length, 1, label);

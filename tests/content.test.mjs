@@ -47,7 +47,36 @@ class El {
   checkVisibility() {
     return true;
   }
+  // Just enough of the DOM for actions: `on[type]` handlers stand in for page listeners.
+  querySelectorAll(sel) {
+    const out = [];
+    const visit = (e) => e.childNodes.forEach((c) => c.nodeType === 1 && (sel.split(/,\s*/).some((s) => c.matches(s)) && out.push(c), visit(c)));
+    visit(this);
+    return out;
+  }
+  dispatchEvent(e) {
+    this.on?.[e.type]?.(e);
+    return true;
+  }
+  getBoundingClientRect() {
+    return { left: 0, top: 0, width: 10, height: 10, right: 10, bottom: 10 };
+  }
+  scrollIntoView() {}
+  focus() {}
+  click() {
+    this.clicked = true;
+  }
+  requestSubmit() {
+    this.submitted = true;
+  }
 }
+
+class Ev {
+  constructor(type, init = {}) {
+    Object.assign(this, init, { type });
+  }
+}
+const stub = () => ({ style: {}, isConnected: true, setAttribute() {}, appendChild() {}, remove() {}, attachShadow: stub });
 
 function page(body) {
   const all = [];
@@ -56,7 +85,8 @@ function page(body) {
   const document = {
     body,
     title: "Shop",
-    documentElement: { lang: "en", scrollHeight: 1000 },
+    documentElement: { lang: "en", scrollHeight: 1000, appendChild() {} },
+    createElement: stub,
     querySelectorAll: () => [],
     getElementById: (id) => all.find((e) => e.attrs.id === id) || null,
   };
@@ -64,7 +94,8 @@ function page(body) {
   let listener;
   load(["content/content.js"], {
     window: {}, document, Node: { ELEMENT_NODE: 1, TEXT_NODE: 3 }, location: { href: "https://shop.example/cart" },
-    scrollY: 0, innerHeight: 800, getSelection: () => "",
+    scrollY: 0, innerHeight: 800, innerWidth: 1200, getSelection: () => "",
+    Event: Ev, KeyboardEvent: Ev, MouseEvent: Ev, PointerEvent: Ev, requestAnimationFrame: (f) => setTimeout(f, 0),
     browser: { runtime: { onMessage: { addListener: (fn) => (listener = fn) } } },
   });
   const send = async (op, args) => {
@@ -76,7 +107,7 @@ function page(body) {
     send,
     async describe(label) {
       const { text, doc } = await send("readPage", {});
-      const id = Number(new RegExp(`\\[(\\d+) \\w+ "${label}"`).exec(text)[1]);
+      const id = Number(new RegExp(`\\[(\\d+) \\w+(?:\\(\\w+\\))? "${label}"`).exec(text)[1]);
       return send("describe", { id, doc });
     },
   };
@@ -146,4 +177,147 @@ test("ordinary fields are still readable and not classified as credentials", asy
     assert.match(text, /value="ordinary-value"/, label);
     assert.equal((await p.send("describe", { id, doc })).sensitive, false, label);
   }
+});
+
+// ---------- search fields ----------
+test("only the field itself or a GET form marked as a search makes a search field", async () => {
+  const cases = [
+    [new El("body", {}, [new El("input", { type: "search", "aria-label": "Find" })]), true],
+    [new El("body", {}, [new El("input", { role: "searchbox", "aria-label": "Find" })]), true],
+    [new El("body", {}, [new El("form", { role: "search" }, [new El("input", { "aria-label": "Find" })])]), true],
+    [new El("body", { role: "search" }, [new El("input", { "aria-label": "Find" })]), false],
+    [new El("body", {}, [new El("div", { role: "search" }, [new El("input", { "aria-label": "Find" })])]), false],
+    [new El("body", {}, [new El("form", { role: "search", method: "post" }, [new El("input", { "aria-label": "Find" })])]), false],
+    [new El("body", {}, [new El("form", { method: "post" }, [new El("input", { type: "search", "aria-label": "Find" })])]), false],
+    [new El("body", {}, [new El("form", { role: "search" }, [new El("textarea", { "aria-label": "Find" })])]), false],
+  ];
+  for (const [body, expected] of cases) {
+    const p = page(body);
+    const field = body.querySelectorAll("input, textarea")[0];
+    assert.equal((await p.describe("Find")).searchField, expected, JSON.stringify({ body: body.attrs, parent: field.parentElement.attrs, field: field.attrs }));
+  }
+});
+
+// ---------- form destinations ----------
+test("describe reports where a submit sends data: formaction, else the form's action, else the page", async () => {
+  const p = page(
+    new El("body", {}, [
+      new El("form", { action: "/checkout?step=2", method: "post" }, [
+        new El("input", { "aria-label": "Qty" }),
+        new El("button", {}, ["Buy"]),
+        new El("button", { formaction: "https://evil.example/collect" }, ["Express"]),
+        new El("button", { type: "button", formaction: "https://evil.example/ignored" }, ["Help"]),
+      ]),
+      new El("form", {}, [new El("button", {}, ["Plain"])]),
+    ]),
+  );
+  assert.equal((await p.describe("Qty")).action, "https://shop.example/checkout?step=2", "Enter in a field submits to the form's action");
+  assert.equal((await p.describe("Buy")).action, "https://shop.example/checkout?step=2");
+  assert.equal((await p.describe("Express")).action, "https://evil.example/collect");
+  assert.equal((await p.describe("Help")).action, "https://shop.example/checkout?step=2", "formaction counts only on submit buttons");
+  assert.equal((await p.describe("Plain")).action, "https://shop.example/cart");
+  const { send } = p;
+  const a = await p.describe("Buy");
+  assert.notEqual(a.fp, (await p.describe("Express")).fp);
+  void send;
+});
+
+// ---------- the approved element, right before activation ----------
+function form(handlers = {}) {
+  const field = new El("input", { "aria-label": "Search" });
+  const button = new El("button", {}, ["Go"]);
+  const f = new El("form", { action: "/search" }, [field, button]);
+  const p = page(new El("body", {}, [f]));
+  return { p, f, field, button, on: (el, type, fn) => ((el.on ||= {})[type] = fn), ...handlers };
+}
+const target = async (p, label) => {
+  const { text, doc } = await p.send("readPage", {});
+  const id = Number(new RegExp(`\\[(\\d+) \\w+(?:\\(\\w+\\))? "${label}"`).exec(text)[1]);
+  const info = await p.send("describe", { id, doc });
+  return { id, doc, expect: info.fp };
+};
+
+test("a click goes ahead when the element is still what was approved", async () => {
+  const { p, button } = form();
+  await p.send("click", await target(p, "Go"));
+  assert.equal(button.clicked, true);
+});
+
+test("a click is refused when a page handler changes where the form sends before the activation", async () => {
+  const { p, f, button, on } = form();
+  const t = await target(p, "Go");
+  on(button, "pointerdown", () => (button.attrs.formaction = "https://evil.example/collect"));
+  await assert.rejects(p.send("click", t), /changed before the action/);
+  assert.equal(button.clicked, undefined);
+  // Changing the form itself (not the button) before the click is caught too.
+  delete button.attrs.formaction;
+  button.on = null;
+  f.attrs.action = "https://evil.example/collect";
+  await assert.rejects(p.send("click", t), /changed before the action/);
+  assert.equal(button.clicked, undefined);
+});
+
+test("typing with submit is refused when a key handler redirects the form before it submits", async () => {
+  const { p, f, field, on } = form();
+  const ok = await target(p, "Search");
+  await p.send("type", { ...ok, text: "socks", submit: true });
+  assert.equal(f.submitted, true);
+  f.submitted = false;
+  on(field, "keydown", () => (f.attrs.method = "post"));
+  await assert.rejects(p.send("type", { ...ok, text: "socks", submit: true }), /changed before the action/);
+  assert.equal(f.submitted, false);
+});
+
+test("Enter in a field is refused when the field changed after approval", async () => {
+  const { p, f, field, on } = form();
+  const t = await target(p, "Search");
+  on(field, "keydown", () => (f.attrs.action = "https://evil.example/"));
+  await assert.rejects(p.send("pressKey", { ...t, key: "Enter" }), /changed before the action/);
+  assert.equal(f.submitted, undefined);
+});
+
+test("actions without the current document's token are refused", async () => {
+  const { p } = form();
+  const { id } = await target(p, "Go");
+  for (const op of ["describe", "click", "highlight", "rect"]) {
+    await assert.rejects(p.send(op, { id }), /page changed since it was read/, op);
+  }
+});
+
+// ---------- credential hints in title and aria-labelledby ----------
+test("a credential hint in title or aria-labelledby hides the value and refuses typing", async () => {
+  const cases = [
+    () => [new El("input", { title: "Password", value: "synthetic-credential" })],
+    () => [new El("span", { id: "lbl" }, ["One-time code"]), new El("input", { "aria-labelledby": "lbl", value: "synthetic-credential" })],
+  ];
+  for (const make of cases) {
+    const kids = make();
+    const input = kids.at(-1);
+    const p = page(new El("body", {}, kids));
+    const { text, doc } = await p.send("readPage", {});
+    assert.doesNotMatch(text, /synthetic-credential/);
+    assert.match(text, /sensitive, not editable/);
+    const id = Number(/\[(\d+) input/.exec(text)[1]);
+    await assert.rejects(p.send("type", { id, doc, text: "x" }), /Refused/);
+    assert.equal(input.value, "synthetic-credential");
+  }
+  // aria-labelledby is also how the field is labelled.
+  const p = page(new El("body", {}, [new El("span", { id: "q" }, ["Destination"]), new El("input", { "aria-labelledby": "q" })]));
+  assert.equal((await p.describe("Destination")).label, "Destination");
+});
+
+// ---------- Ask / Summarize text ----------
+test("page text for Ask and Summarize leaves out editable regions that hold credentials", async () => {
+  const p = page(
+    new El("body", {}, [
+      new El("p", {}, ["Save these somewhere safe.\n"]),
+      new El("div", { contenteditable: "true", "aria-label": "Recovery codes" }, ["abcd-1234 efgh-5678"]),
+      new El("div", { contenteditable: "true", "aria-label": "Notes" }, ["ordinary notes"]),
+    ]),
+  );
+  const { text } = await p.send("getText", {});
+  assert.doesNotMatch(text, /abcd-1234|efgh-5678/);
+  assert.match(text, /\[sensitive field omitted\]/);
+  assert.match(text, /Save these somewhere safe/);
+  assert.match(text, /ordinary notes/);
 });
