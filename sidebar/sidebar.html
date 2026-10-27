@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lantern</title>
+  <link rel="stylesheet" href="sidebar.css">
+</head>
+<body>
+  <header class="top">
+    <div class="status" id="status" title="Model server status">
+      <span class="dot" id="dot"></span>
+      <span class="model" id="model">Connecting…</span>
+    </div>
+    <button class="icon" id="newChat" title="New conversation" aria-label="New conversation">
+      <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12M4 10h12"/></svg>
+    </button>
+    <button class="icon" id="openSettings" title="Settings" aria-label="Settings">
+      <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="2.6"/><path d="M10 2.5v2.2M10 15.3v2.2M2.5 10h2.2M15.3 10h2.2M4.7 4.7l1.6 1.6M13.7 13.7l1.6 1.6M4.7 15.3l1.6-1.6M13.7 6.3l1.6-1.6"/></svg>
+    </button>
+  </header>
+
+  <div class="banner" id="banner" hidden>
+    <p id="bannerText"></p>
+    <div class="banner-actions" id="bannerActions"></div>
+  </div>
+
+  <div class="context" id="context" title="What Lantern will read"></div>
+
+  <div class="quick">
+    <button id="summarize" class="chip">Summarize</button>
+    <div class="split">
+      <button id="translate" class="chip">Translate</button>
+      <select id="lang" aria-label="Translate into"></select>
+    </div>
+    <button id="restore" class="chip ghost" hidden>Show original</button>
+  </div>
+
+  <main id="log" aria-live="polite"></main>
+
+  <footer class="composer">
+    <div class="modes" role="radiogroup" aria-label="Mode">
+      <button role="radio" data-mode="ask" aria-checked="true" title="Answer from the current page(s)">Ask</button>
+      <button role="radio" data-mode="agent" aria-checked="false" title="Let Lantern click through pages to finish a task">Agent</button>
+    </div>
+    <div class="inputrow">
+      <textarea id="input" rows="2" placeholder="Ask about this page…" aria-label="Message"></textarea>
+      <button id="send" class="primary" aria-label="Send">Send</button>
+    </div>
+  </footer>
+
+  <script src="../lib/settings.js"></script>
+  <script src="../lib/llm.js"></script>
+  <script src="../lib/tabs.js"></script>
+  <script src="../lib/markdown.js"></script>
+  <script src="../lib/chat.js"></script>
+  <script src="../lib/agent.js"></script>
+  <script src="sidebar.js"></script>
+</body>
+</html>
