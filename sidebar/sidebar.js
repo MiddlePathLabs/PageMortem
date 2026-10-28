@@ -130,7 +130,7 @@ function passageButton(source, quote, onError) {
 
 // ---------- sources for Ask and Summarize answers ----------
 // Nothing shows until asked: hovering a paragraph or bullet offers "source", and selecting part of an answer offers the
-// sources of every point it touches. Local matches (lib/evidence.js) show at once; only weak ones go to the model.
+// sources of every point it touches. Strong wording matches show at once as unchecked related passages.
 const evidenceAnswers = new Set(); // { body, claims: Map<block, claim>, reveal(claims) }
 
 /** A block's own words: without nested lists, our own controls, or a bold "Label:" lead-in. */
@@ -168,7 +168,9 @@ function attachEvidence(body, sources) {
       return;
     }
     const parts = [];
-    if (result.kind === "weak") parts.push(el("p", "citation-status", "Closest passage, a weak match:"));
+    parts.push(el("p", "citation-status", result.kind === "weak"
+      ? "Related passage only; this match does not verify the claim:"
+      : "Model-selected supporting passage (quote found in the page):"));
     parts.push(el("q", null, result.quote));
     if (manyPages) parts.push(el("div", "source-url", result.source.title || result.source.url));
     const { button, status } = passageButton(result.source, result.quote);
@@ -181,7 +183,7 @@ function attachEvidence(body, sources) {
     const ask = [];
     for (const claim of list) {
       if (claim.pending || (claim.result && claim.result.kind !== "error")) continue;
-      if (claim.local?.score >= STRONG_MATCH) claim.result = { ...claim.local, kind: "match" };
+      if (claim.local?.score >= STRONG_MATCH) claim.result = { ...claim.local, kind: "weak" };
       else {
         claim.result = null;
         claim.pending = true;
@@ -190,26 +192,20 @@ function attachEvidence(body, sources) {
     }
     list.forEach(render);
     if (!ask.length) return;
-    // A reranker settles most of these locally; only what it can't place goes to the model.
+    // Retrieval relevance is not support: ask the model to check even a high-scoring reranked passage.
     const model = state.settings?.rerankModel;
     const ranked = model ? await rerankEvidence({ claims: ask.map((c) => c.text), evidence, llm: state.llm, model }).catch(() => []) : [];
-    const rest = ask.filter((claim, i) => {
-      if (!ranked[i]) return true;
-      claim.pending = false;
-      claim.result = { ...ranked[i], kind: "match", by: `Matched by ${model} (score ${ranked[i].score.toFixed(2)})` };
-      if (claim.panel.isConnected) render(claim);
-      return false;
-    });
-    if (!rest.length) return;
     let found = [], failure = null;
     try {
-      found = await modelEvidence({ claims: rest.map((c) => c.text), evidence, llm: state.llm });
+      found = await modelEvidence({ claims: ask.map((c) => c.text), evidence, llm: state.llm, ranked });
     } catch (e) {
       failure = e;
     }
-    rest.forEach((claim, i) => {
+    ask.forEach((claim, i) => {
       claim.pending = false;
-      const fallback = claim.local?.score >= WEAK_MATCH ? { ...claim.local, kind: "weak" } : null;
+      const fallback = ranked[i]
+        ? { ...ranked[i], kind: "weak", by: `Related by ${model} (relevance score ${ranked[i].score.toFixed(2)})` }
+        : claim.local?.score >= WEAK_MATCH ? { ...claim.local, kind: "weak" } : null;
       if (found[i]) claim.result = { ...found[i], kind: "match" };
       else if (failure) claim.result = fallback || { kind: "error", message: failure.message || String(failure) };
       else claim.result = fallback || { kind: "none" };
@@ -481,10 +477,10 @@ function addBot({ agent = false, replay = false, raw = false } = {}) {
   };
   let frame = 0, pendingText = "", pendingThink = "", stepCount = 0;
   const api = {
-    /** Origins the answer may link to (a live Set is fine: the agent adds pages as it reads them). */
-    links(origins) {
-      links = origins;
-      op("links", origins);
+    /** Exact page URLs the answer may link to (a live Set is fine: the agent adds pages as it reads them). */
+    links(urls) {
+      links = urls;
+      op("links", urls);
     },
     /** Agent answers: sources for the model's own [[cite:…]] markup. */
     citations(records) {
@@ -886,7 +882,7 @@ async function runAsk(question) {
     if (!pages.length) throw new Error("No pages included. Expand Context and add an open tab.");
     if (pages.some((page) => !page.url)) throw new Error("Context is still loading. Refresh context and try again.");
     for (const p of pages) if (p.error) bot.note(`Couldn't read “${p.title || p.url}”: ${p.error}`);
-    bot.links(new Set(pages.map((p) => originOf(p.url))));
+    bot.links(new Set(pages.filter((p) => !p.error).map((p) => new URL(p.url).href)));
     const selection = pages.map((p) => p.selection || "").filter(Boolean).join("\n\n");
     if (selection) bot.note(`Including selected text (${Math.min(selection.length, SELECTION_CHARS)} chars).`);
     const llm = metered(state.llm, meter);
@@ -900,7 +896,7 @@ async function runAsk(question) {
         bot.image(shot.url);
         bot.note(shot.cropped ? "Showing the model the main image on the page." : "Showing the model a screenshot of the page.");
         const { visionModel, model } = state.settings;
-        if (visionModel && visionModel !== model) {
+        if (state.settings.visionEndpoint || (visionModel && visionModel !== model)) {
           const seen = await describeImage({ image: shot.url, question, llm, settings: state.settings, signal: ctrl.signal });
           asked = `${question}\n\n<screenshot_description>\n${seen}\n</screenshot_description>\n(What the vision model sees in a screenshot from the page.)`;
         } else image = shot.url;
@@ -1050,7 +1046,7 @@ async function runSummarize() {
   try {
     if (page.error) throw new Error(page.error);
     const p = useSel ? { ...page, text: page.selection } : page;
-    bot.links(new Set([originOf(page.url)]));
+    bot.links(new Set([new URL(page.url).href]));
     bot.evidence([{ tabId: tab.id, doc: p.doc, url: p.url, title: p.title, text: p.text }]);
     const answer = await summarize({
       page: p, llm: metered(state.llm, meter), settings: state.settings, signal: ctrl.signal,

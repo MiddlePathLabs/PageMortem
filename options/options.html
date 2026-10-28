@@ -38,14 +38,48 @@
       </div>
       <datalist id="models"></datalist>
       <p class="hint" id="visionHint">Screenshots use the vision model when set. Model names alone do not establish image or tool support.</p>
+      <details>
+        <summary>Independent vision server (optional)</summary>
+        <label>Vision endpoint <span class="opt">(blank = main connection)</span>
+          <input id="visionEndpoint" type="url" placeholder="http://192.168.1.51:8080/v1" spellcheck="false" aria-describedby="auxiliaryHint">
+        </label>
+        <label>Vision API key <span class="opt">(optional, only for this endpoint)</span>
+          <input id="visionApiKey" type="password" autocomplete="off" spellcheck="false">
+        </label>
+      </details>
+      <p class="hint" id="auxiliaryHint">Independent endpoints must be trusted local servers already included in the packaged network lock. Pass all origins to configure.py and reload the built extension. A blank endpoint uses the main connection and its key; an explicit endpoint uses only its own key (blank means no key), even on the same origin. Model names can be typed for servers not listed by Test connection. If an independent vision endpoint is set with no vision model name, its first listed model is used. Text-only requests stay on the main server.</p>
       <label>Rerank model <span class="opt">(blank = none)</span>
         <input id="rerankModel" list="models" spellcheck="false" aria-describedby="rerankHint">
       </label>
       <p class="hint" id="rerankHint">A reranker such as Qwen3-Reranker, served on <code>/rerank</code>. Ask then sends the parts of a long page most relevant to the question instead of cutting it at the end, and Sources finds reworded points without asking the main model.</p>
+      <details>
+        <summary>Independent rerank server (optional)</summary>
+        <label>Rerank endpoint <span class="opt">(blank = main connection)</span>
+          <input id="rerankEndpoint" type="url" placeholder="http://192.168.1.52:8000/v1" spellcheck="false" aria-describedby="auxiliaryHint">
+        </label>
+        <label>Rerank API key <span class="opt">(optional, only for this endpoint)</span>
+          <input id="rerankApiKey" type="password" autocomplete="off" spellcheck="false">
+        </label>
+      </details>
       <label>Decision model <span class="opt">(blank = none)</span>
         <input id="decisionModel" list="models" spellcheck="false" aria-describedby="decisionHint">
       </label>
-      <p class="hint" id="decisionHint">A small yes/no classifier, or any model with structured output. Agent watches can then wait for a condition such as “the price is below $50” instead of exact text; it is checked each time the page changes, without the main model.</p>
+      <p class="hint" id="decisionHint">Agent watches can wait for a condition such as “the price is below $50” instead of exact text, without the main model. Select the API your server serves: System One exposes probabilities (including Halogen D3); OpenAI structured output returns a categorical answer. An ambiguous System One probability (between 0.15 and 0.85) does not end a watch. Image decisions always use System One, with a vision-model fallback when unavailable or unsure.</p>
+      <label>Decision text API
+        <select id="decisionApi">
+          <option value="openai">OpenAI structured output (/chat/completions)</option>
+          <option value="systemone">System One probabilities (/systemone, including Halogen D3)</option>
+        </select>
+      </label>
+      <details>
+        <summary>Independent decision server (optional)</summary>
+        <label>Decision endpoint <span class="opt">(blank = main connection)</span>
+          <input id="decisionEndpoint" type="url" placeholder="http://192.168.1.53:8731/v1" spellcheck="false" aria-describedby="auxiliaryHint">
+        </label>
+        <label>Decision API key <span class="opt">(optional, only for this endpoint)</span>
+          <input id="decisionApiKey" type="password" autocomplete="off" spellcheck="false">
+        </label>
+      </details>
       <label>Tool calling
         <select id="toolMode" aria-describedby="toolHint">
           <option value="native">Native (OpenAI tool calls)</option>
@@ -73,8 +107,12 @@
           <span id="rerankResult" class="result" role="status" aria-live="polite" aria-atomic="true">Not checked. Ranks three short passages against a question.</span>
         </div>
         <div class="probe">
-          <button id="checkDecision" type="button" aria-describedby="decisionResult">Check Decision</button>
-          <span id="decisionResult" class="result" role="status" aria-live="polite" aria-atomic="true">Not checked. Asks four yes/no questions about short texts.</span>
+          <button id="checkDecision" type="button" aria-describedby="decisionResult">Check Decision Text</button>
+          <span id="decisionResult" class="result" role="status" aria-live="polite" aria-atomic="true">Not checked. Asks four yes/no questions using the selected text API.</span>
+        </div>
+        <div class="probe">
+          <button id="checkDecisionImage" type="button" aria-describedby="decisionImageResult">Check Decision Images</button>
+          <span id="decisionImageResult" class="result" role="status" aria-live="polite" aria-atomic="true">Not checked. Sends a generated image through System One, separately from text support.</span>
         </div>
       </fieldset>
       <label>Default translation language

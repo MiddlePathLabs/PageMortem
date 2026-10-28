@@ -107,6 +107,7 @@ test("a page that moves off-site after the landing check is never read", async (
       "https://evil.example/": page("Evil", "SECRET-EVIL-TEXT"),
     },
     replies: [call("click", { id: 1 }), answer("ok")],
+    decide: (card) => card.title.startsWith("Click") ? "yes" : "no",
   });
   // The page passes the landing check, then redirects itself just before it's read.
   const handle = web.handle.bind(web);

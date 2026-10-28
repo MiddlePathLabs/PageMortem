@@ -149,6 +149,7 @@ test("folder and file names are safe and ordered", () => {
   assert.equal(ctx.imageFileName("https://x.example/img?id=5", 12), "012-img.jpg");
   assert.equal(ctx.imageFileName("https://x.example/", 1), "001-image.jpg");
   assert.equal(ctx.imageFileName("https://x.example/..%2F..%2Fevil.exe", 2), "002-evil.exe.jpg");
+  assert.equal(ctx.imageFileName("https://x.example/active.svg", 3), "003-active.svg.jpg");
 });
 
 test("yes/no answers are read conservatively", () => {

@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "PageMortem",
   "version": "0.4.0",
-  "description": "Ask, summarize, translate and automate pages with your own LAN-hosted model. No other network access.",
+  "description": "Ask, summarize, translate and automate pages with self-hosted local models.",
   "browser_specific_settings": {
     "gecko": {
       "id": "pagemortem@middlepathlabs.local",

@@ -9,13 +9,14 @@ const page = (title, text, elements = {}) => ({ title, text, elements });
 const keys = (web) => web.log.filter(([op]) => op === "key").map(([, , a]) => a.key);
 
 // ---------- press_key ----------
-test("Escape, arrows and Tab run without approval; Tab reports where focus went", async () => {
+test("Escape, arrows and Tab require approval; Tab reports where focus went", async () => {
   const { run, ui, web, agent } = setup({
     sites: { [SHOP]: page("Shop", "dialog", { 1: { kind: "button", label: "Menu" }, 2: { kind: "input", label: "Search", searchField: true } }) },
     replies: [call("press_key", { id: 1, key: "Escape" }), call("press_key", { id: 2, key: "ArrowDown" }), call("press_key", { id: 2, key: "Tab" }), answer("ok")],
+    decide: () => "yes",
   });
   await run();
-  assert.equal(ui.cards.length, 0);
+  assert.equal(ui.cards.length, 3);
   assert.deepEqual(keys(web), ["Escape", "ArrowDown", "Tab"]);
   assert.match(results(agent)[2], /focus moved to \[99 input "Next field"\]/);
 });
@@ -40,16 +41,17 @@ test("Enter or Space on a risky control asks like a click, with no allow-all, an
   }
 });
 
-test("Enter on a harmless same-site button or link runs on its own, like a click", async () => {
+test("Enter on a same-site link uses the click approval", async () => {
   const { run, ui, web, agent } = setup({
     sites: {
       [SHOP]: page("Shop", "", { 1: { kind: "link", tag: "A", label: "Next page", href: `${SHOP}p2` } }),
       [`${SHOP}p2`]: page("Page 2", "second page items"),
     },
     replies: [call("press_key", { id: 1, key: "Enter" }), answer("ok")],
+    decide: () => "yes",
   });
   await run();
-  assert.equal(ui.cards.length, 0);
+  assert.equal(ui.cards.length, 1);
   assert.equal(web.tabs.get(1).url, `${SHOP}p2`);
   assert.match(results(agent)[0], /navigated to .*p2[\s\S]*second page items/);
 });
@@ -110,6 +112,7 @@ test("letters and modifier shortcuts are rejected; common spellings of allowed k
       call("press_key", { id: 1, key: "pagedown" }),
       answer("ok"),
     ],
+    decide: () => "yes",
   });
   await run();
   const r = results(agent);
@@ -123,7 +126,7 @@ test("a key the page handles itself and uses to leave the site is caught and und
       [SHOP]: page("Shop", "", { 1: { kind: "button", label: "Gallery", onKey: (tab, w) => (w.navigate(tab, "https://evil.example/x"), true) } }),
     },
     replies: [call("press_key", { id: 1, key: "ArrowRight" }), answer("ok")],
-    decide: () => "no",
+    decide: (c) => c.title.startsWith("Press ArrowRight") ? "yes" : "no",
   });
   await run();
   assert.equal(ui.cards.at(-1).title, "The page went to another site. Continue there?");

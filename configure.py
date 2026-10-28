@@ -4,6 +4,7 @@
 Usage:
     python configure.py http://192.168.1.50:8080/v1
     python configure.py http://192.168.1.50:8080 http://192.168.1.51:8000   # several servers
+    # Include every independent vision, rerank or decision server; their settings cannot expand this lock.
 
 Copies the extension into build/ with the CSP `connect-src` set so extension pages can
 reach only these origins, then packages that copy as pagemortem.xpi next to this script.
@@ -13,6 +14,7 @@ build/ is replaced on every run.
 from __future__ import annotations
 
 import json
+import ipaddress
 import re
 import shutil
 import sys
@@ -31,17 +33,41 @@ PACKAGED = ("manifest.json", "background.js", "icons", "lib", "content", "sideba
 NETLOC_RE = re.compile(r"(?:[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*|\[[0-9A-Fa-f:.]+\])(?::[0-9]{1,5})?")
 
 
+def is_local_host(host: str) -> bool:
+    host = host.lower().rstrip(".")
+    if host == "localhost" or host.endswith((".localhost", ".local")):
+        return True
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    if isinstance(address, ipaddress.IPv4Address):
+        return any(address in network for network in map(ipaddress.ip_network,
+            ("127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16")))
+    return address == ipaddress.IPv6Address("::1") or address in ipaddress.ip_network("fc00::/7") or address in ipaddress.ip_network("fe80::/10")
+
+
 def to_origin(url: str) -> str:
     raw = url.strip()
     # urlsplit drops tab and newline but keeps other whitespace and control characters, some of which CSP splits on.
     if any(c.isspace() or ord(c) < 0x20 or ord(c) == 0x7F for c in raw):
         raise ValueError(f"whitespace or control characters in {url!r}")
     parts = urlsplit(raw if "://" in raw else f"http://{raw}")
+    # Accessing .port validates its numeric range (urlsplit alone accepts :99999).
+    _ = parts.port
     if parts.scheme not in ("http", "https") or not parts.hostname:
         raise ValueError(f"not an http(s) URL: {url!r}")
+    if not is_local_host(parts.hostname):
+        raise ValueError(f"model server must be loopback, a private LAN address, or a .local host: {url!r}")
     if not NETLOC_RE.fullmatch(parts.netloc):
         raise ValueError(f"invalid characters in {url!r}")
-    return f"{parts.scheme}://{parts.netloc}"
+    # Match URL.origin in Firefox: lowercase the host, normalize numeric ports, and omit default ports.
+    host = str(ipaddress.ip_address(parts.hostname)) if ":" in parts.hostname else parts.hostname.lower()
+    if ":" in host:
+        host = f"[{host}]"
+    port = parts.port
+    default_port = 80 if parts.scheme == "http" else 443
+    return f"{parts.scheme}://{host}{f':{port}' if port is not None and port != default_port else ''}"
 
 
 def locked_manifest(origins: list[str]) -> str:

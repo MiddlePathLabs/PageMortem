@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const TEXT = ["endpoint", "apiKey", "model", "visionModel", "rerankModel", "decisionModel", "language", "toolMode", "thinking"];
+const TEXT = ["endpoint", "apiKey", "model", "visionModel", "visionEndpoint", "visionApiKey", "rerankModel", "rerankEndpoint", "rerankApiKey", "decisionModel", "decisionEndpoint", "decisionApiKey", "decisionApi", "language", "toolMode", "thinking"];
 const NUM = ["temperature", "maxTokens", "maxPageChars", "maxSteps", "screenshotWidth", "translateConcurrency"];
 const BOOL = ["showStats", "stayOnSite", "confirmAll", "closeAgentTabs"];
 
@@ -43,7 +43,8 @@ function fill(s) {
 
 function showLock() {
   const el = $("lockStatus");
-  const problem = lockProblem($("endpoint").value.trim());
+  const endpoints = ["endpoint", "visionEndpoint", "rerankEndpoint", "decisionEndpoint"].map((id) => $(id).value.trim()).filter(Boolean);
+  const problem = endpoints.map(lockProblem).find(Boolean);
   el.className = "hint " + (problem ? "bad" : "ok");
   el.textContent = problem || `Network lock: PageMortem can only contact ${lockedOrigins().join(", ")}.`;
 }
@@ -61,7 +62,8 @@ async function runCheck(buttonId, resultId, check) {
   result(resultId, "Checking the current settings…");
   try {
     const s = read();
-    const problem = lockProblem(s.endpoint);
+    const service = buttonId === "checkRerank" ? "rerank" : buttonId.startsWith("checkDecision") ? "decision" : buttonId === "checkVision" ? "vision" : "";
+    const problem = lockProblem((service && s[`${service}Endpoint`]) || s.endpoint);
     if (problem) throw new Error(problem);
     const message = await check(new LLM(s), s);
     result(resultId, message, true);
@@ -154,14 +156,30 @@ async function checkDecision(llm, s) {
     ["The item is back in stock.", "Acme Kettle\n$54.99\nOnly 3 left - order soon\nAdd to cart", "yes"],
   ];
   let right = 0;
+  let unknown = 0;
   for (const [question, text, expected] of cases) {
     const answer = await llm.decide({ model: s.decisionModel, question: `Does this web page show that the following is true now? ${question}`, text });
     if (answer === expected) right++;
+    if (answer === "unknown") unknown++;
   }
+  const api = s.decisionApi === "systemone" ? "System One probabilities" : "OpenAI structured output";
   if (right < cases.length) {
-    throw new Error(`Decision probe did not pass for ${s.decisionModel}: ${right} of ${cases.length} answers were right. A watch condition could fire early or never; try another model. This does not prove it can't work.`);
+    throw new Error(`Decision text probe did not pass for ${s.decisionModel} (${api}): ${right} of ${cases.length} answers were right; ${unknown} ambiguous. A watch condition could fire early or never. This does not prove the API is unsupported.`);
   }
-  return `Decision probe passed for ${s.decisionModel}: answered ${cases.length} of ${cases.length} yes/no questions right. Small tests don't guarantee every condition.`;
+  return `Decision text probe passed for ${s.decisionModel} (${api}): ${right} of ${cases.length} answers right. This tests text only, not image support; small tests don't guarantee every condition.`;
+}
+
+async function checkDecisionImage(llm, s) {
+  if (!s.decisionModel) throw new Error("Set a decision model first.");
+  const image = visionProbeImage();
+  const scores = [];
+  for (const color of [image.left, image.right]) {
+    scores.push(await llm.decideImage({ model: s.decisionModel, question: `Is the left half of this image ${color}?`, image: image.url }));
+  }
+  if (!(scores[0] >= 0.85 && scores[1] <= 0.15)) {
+    throw new Error(`Decision image probe did not pass for ${s.decisionModel}: yes probabilities ${scores.map((p) => p.toFixed(3)).join(", ")}; expected at least 0.85, then at most 0.15. Ambiguous or wrong scores do not prove images are unsupported.`);
+  }
+  return `Decision image probe passed for ${s.decisionModel} on System One: two clear answers about a generated PNG. This does not guarantee recognition of screenshots, people or products.`;
 }
 
 function visionProbeImage() {
@@ -185,7 +203,7 @@ function visionProbeImage() {
 }
 
 async function checkVision(llm, s) {
-  const model = s.visionModel || await llm.model();
+  const model = await llm.model(s.visionModel || s.visionEndpoint ? "vision" : undefined);
   const image = visionProbeImage();
   const r = await llm.chat({
     model,
@@ -495,13 +513,14 @@ async function init() {
   $("backupImport").addEventListener("click", () => $("backupFile").click());
   $("backupFile").addEventListener("change", importBackup);
   showLock();
-  $("endpoint").addEventListener("input", showLock);
+  for (const id of ["endpoint", "visionEndpoint", "rerankEndpoint", "decisionEndpoint"]) $(id).addEventListener("input", showLock);
   $("test").addEventListener("click", () => runCheck("test", "testResult", testConnection));
   $("checkText").addEventListener("click", () => runCheck("checkText", "textResult", checkText));
   $("checkTools").addEventListener("click", () => runCheck("checkTools", "toolsResult", checkTools));
   $("checkVision").addEventListener("click", () => runCheck("checkVision", "visionResult", checkVision));
   $("checkRerank").addEventListener("click", () => runCheck("checkRerank", "rerankResult", checkRerank));
   $("checkDecision").addEventListener("click", () => runCheck("checkDecision", "decisionResult", checkDecision));
+  $("checkDecisionImage").addEventListener("click", () => runCheck("checkDecisionImage", "decisionImageResult", checkDecisionImage));
   $("checkThinking").addEventListener("click", () => runCheck("checkThinking", "thinkingResult", checkThinking));
   $("save").addEventListener("click", async () => {
     $("save").disabled = true;

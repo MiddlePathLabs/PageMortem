@@ -28,6 +28,16 @@ test("an already-stopped page call performs no browser work", async () => {
   assert.deepEqual(events, []);
 });
 
+test("restricted Firefox pages are refused before injection, even if the browser would resolve executeScript", async () => {
+  const events = [];
+  const ctx = load(["lib/tabs.js"], { browser: {
+    tabs: { get: async () => ({ url: "about:addons" }), sendMessage: async () => { events.push("message"); return { ok: true }; } },
+    scripting: { executeScript: async () => { events.push("inject"); } },
+  } });
+  await assert.rejects(ctx.pageCall(1, "readPage"), /Only ordinary HTTP\(S\) pages are supported/);
+  assert.deepEqual(events, []);
+});
+
 test("Stop during ping or injection prevents late action dispatch, including failed browser calls", async () => {
   for (const phase of ["ping-ready", "ping-missing", "ping-failed", "inject", "inject-failed"]) {
     const events = [];
@@ -68,7 +78,7 @@ test("Stop during ping or injection prevents late action dispatch, including fai
 test("only http(s) URLs count as web pages", () => {
   const { isWebUrl } = lib();
   for (const u of ["https://a.example/", "http://192.168.1.2:8080/x"]) assert.ok(isWebUrl(u), u);
-  for (const u of ["javascript:alert(1)", "data:text/html,<b>x</b>", "file:///etc/passwd", "about:config", "moz-extension://x/", "blob:https://a/x", "not a url", ""]) {
+  for (const u of ["javascript:alert(1)", "data:text/html,<b>x</b>", "file:///etc/passwd", "about:config", "moz-extension://x/", "blob:https://a/x", "https://user:pass@example.com/", "not a url", ""]) {
     assert.ok(!isWebUrl(u), u);
   }
 });
@@ -100,10 +110,13 @@ test("the endpoint lock accepts only the packaged connect-src origin", () => {
   const { lockProblem, lockedOrigins } = lib();
   assert.deepEqual(plain(lockedOrigins()), ["http://192.168.1.50:8080"]);
   assert.equal(lockProblem("http://192.168.1.50:8080/v1"), null);
-  for (const u of ["https://api.openai.com/v1", "http://192.168.1.51:8080/v1", "http://192.168.1.50:8081/v1", "http://user:pw@evil.example/v1"]) {
+  assert.match(lockProblem("https://api.openai.com/v1"), /loopback or private LAN/);
+  for (const u of ["http://192.168.1.51:8080/v1", "http://192.168.1.50:8081/v1"]) {
     assert.match(lockProblem(u), /network lock/, u);
   }
   assert.match(lockProblem("::nope"), /valid URL/);
+  assert.match(lockProblem("http://user:pw@192.168.1.50:8080/v1"), /without embedded credentials/);
+  assert.match(lockProblem("file:///tmp/model"), /HTTP\(S\)/);
 });
 
 // ---------- model client ----------
@@ -195,7 +208,13 @@ test("thinking levels fall back to the chat template, then to test requests", as
 test("a model server that never answers times out with a readable error", async () => {
   const ctx = lib({ fetch: hangingFetch });
   const llm = new (ctx.$("LLM"))({ ...SETTINGS, requestTimeout: 50 });
-  await assert.rejects(llm.chat({ messages: [] }), (e) => e instanceof ctx.$("LLMError") && /didn't answer within/.test(e.message));
+  // Node's AbortSignal.timeout timer is unref'd; keep this test process alive until it fires.
+  const keepAlive = setTimeout(() => {}, 100);
+  try {
+    await assert.rejects(llm.chat({ messages: [] }), (e) => e instanceof ctx.$("LLMError") && /didn't answer within/.test(e.message));
+  } finally {
+    clearTimeout(keepAlive);
+  }
 });
 
 test("a user Stop passes through instead of becoming a connection error", async () => {
@@ -260,13 +279,15 @@ test("Markdown escapes HTML and never produces scripts, images, frames or handle
   assert.match(html, /&lt;script&gt;/);
 });
 
-test("Markdown links are clickable only to origins the answer came from", () => {
+
+test("Markdown links require an exact read URL, not an origin, path prefix or altered payload", () => {
   const { renderMarkdown } = lib();
-  const html = renderMarkdown("[docs](https://docs.example/a?b=1&c=2) and [leak](https://evil.example/?d=secret)", { links: new Set(["https://docs.example"]) });
+  const url = "https://docs.example/a?b=1&c=2";
+  const html = renderMarkdown(`[docs](${url}) [query](https://docs.example/a?b=secret) [fragment](${url}#secret) [path](https://docs.example/collect/secret) [other](https://evil.example/)`, { links: new Set([url]) });
+  assert.equal((html.match(/<a /g) || []).length, 1);
   assert.match(html, /<a href="https:\/\/docs\.example\/a\?b=1&amp;c=2"/);
-  assert.doesNotMatch(html, /<a href="https:\/\/evil/);
-  assert.match(html, /class="unlinked"[^>]*>\(https:\/\/evil\.example\/\?d=secret\)/);
-  assert.doesNotMatch(renderMarkdown("[x](https://docs.example/)"), /<a /, "no origins given: nothing is clickable");
+  assert.doesNotMatch(renderMarkdown("[x](https://docs.example/a)", { links: new Set(["https://docs.example"]) }), /<a /);
+  assert.doesNotMatch(renderMarkdown("[x](https://docs.example/)"), /<a /);
 });
 
 test("Markdown keeps code blocks, tables and lists", () => {

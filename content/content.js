@@ -94,7 +94,7 @@
 
   function shortHref(href) {
     try {
-      const u = new URL(href, location.href);
+      const u = new URL(href, document.baseURI || location.href);
       if (u.protocol === "javascript:") return "javascript";
       const path = u.pathname + u.search;
       return clip(u.origin === location.origin ? path : u.host + path, 90);
@@ -515,6 +515,30 @@
   }
 
   // ---------- actions ----------
+  // Bind an advance cart approval to stable product and variant clues. Stock text and button disabled state
+  // are expected to change during a watch, so including them would make the grant unusable on real pages.
+  // This cannot infer arbitrary site-script behavior; pages with no identifiable product require fresh approval.
+  function cartContext(el, form) {
+    const region = el.closest("article") || form;
+    if (!region) return "";
+    const heading = clean(region.querySelector?.("h1, h2, [itemprop=name]")?.innerText || "").slice(0, 200);
+    const ids = [];
+    for (let node = el; node; node = node.parentElement) {
+      for (const attr of ["data-product-id", "data-item-id", "data-sku"]) {
+        const value = node.getAttribute?.(attr);
+        if (value) ids.push([attr, value.slice(0, 200)]);
+      }
+      if (node === region) break;
+    }
+    const controls = [...(form?.elements || region.querySelectorAll("input, select, textarea"))]
+      .filter((c) => ["INPUT", "SELECT", "TEXTAREA"].includes(c.tagName));
+    if (controls.length > 100 || controls.some(isSensitive)) return "";
+    const productField = controls.some((c) => c.type === "hidden" && /(?:product|item|sku|variant|offer)[_-]?(?:id|code)?/i.test(c.name || "") && c.value);
+    if (!ids.length && !productField && heading.length < 6) return "";
+    return JSON.stringify([document.title, heading, ids, controls.map((c) =>
+      [c.tagName, c.name, c.type, c.value, !!c.checked])]);
+  }
+
   function describe(el) {
     const kind = kindOf(el) || (el.tagName === "IMG" ? "image" : el.tagName.toLowerCase());
     const link = el.closest("a[href]");
@@ -537,7 +561,7 @@
       kind,
       tag: el.tagName,
       label: clip(labelOf(el), 120),
-      href: link ? new URL(link.getAttribute("href"), location.href).href : "",
+      href: link ? new URL(link.getAttribute("href"), document.baseURI || location.href).href : "",
       download: !!link?.hasAttribute("download"),
       inForm: !!form,
       formMethod,
@@ -551,6 +575,7 @@
       // (even <body role=search>) doesn't, and nothing that posts data is a search.
       searchField: el.tagName === "INPUT" && ["", "text", "search"].includes(type) && formMethod !== "post" &&
         (type === "search" || el.getAttribute("role") === "searchbox" || form?.getAttribute("role") === "search"),
+      cartContext: cartContext(el, form),
       doc: DOC,
     };
     // What the agent approved. Actions compare it again right before they activate anything.

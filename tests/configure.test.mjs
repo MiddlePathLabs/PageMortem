@@ -58,9 +58,17 @@ test("configure.py replaces build/ on every run", opts, () => {
   assert.match(csp(fs.readFileSync(path.join(dir, "build", "manifest.json"), "utf8")), /connect-src http:\/\/10\.0\.0\.7:9000;/);
 });
 
+test("configure.py writes canonical origins that match browser URL.origin", opts, () => {
+  const dir = project();
+  const r = configure(dir, "http://LOCALHOST:080/v1", "https://[FD00::1]:443/v1", "http://10.0.0.9:09000/v1");
+  assert.equal(r.status, 0, r.stderr);
+  const built = fs.readFileSync(path.join(dir, "build", "manifest.json"), "utf8");
+  assert.match(csp(built), /connect-src http:\/\/10\.0\.0\.9:9000 http:\/\/localhost https:\/\/\[fd00::1\];/);
+});
+
 test("configure.py rejects a bad address before building anything", opts, () => {
   const dir = project();
-  for (const bad of ["ftp://10.0.0.9", "http://user@evil.example", "http://a.example;script-src *"]) {
+  for (const bad of ["ftp://10.0.0.9", "http://user@evil.example", "http://a.example;script-src *", "http://10.0.0.9:99999", "https://api.openai.com/v1", "http://8.8.8.8:8000/v1"]) {
     const r = configure(dir, "http://10.0.0.9:9000", bad);
     assert.equal(r.status, 1, bad);
     assert.match(r.stderr, /^error:/, bad);

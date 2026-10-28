@@ -5,7 +5,7 @@ import { setup, call, answer, results } from "./harness.mjs";
 const SHOP = "https://shop.example/";
 const page = (title, text, elements = {}) => ({ title, text, elements });
 
-test("ordinary same-site links and in-page buttons run without approval", async () => {
+test("ordinary same-site links and in-page buttons require interaction approval", async () => {
   const { run, ui, web } = setup({
     sites: {
       [SHOP]: page("Shop", "[1 link \"Next page\"] [2 button \"Show more\"]", {
@@ -15,9 +15,10 @@ test("ordinary same-site links and in-page buttons run without approval", async 
       [`${SHOP}p2`]: page("Page 2", "items"),
     },
     replies: [call("click", { id: 2 }), call("click", { id: 1 }), answer("done")],
+    decide: () => "yes",
   });
   assert.equal(await run(), "done");
-  assert.equal(ui.cards.length, 0);
+  assert.equal(ui.cards.length, 2);
   assert.equal(web.log.filter(([op]) => op === "click").length, 2);
 });
 
@@ -91,7 +92,7 @@ test("a click that page script redirects off-site is caught after the fact and u
       }),
     },
     replies: [call("click", { id: 1 }), answer("ok")],
-    decide: () => "no",
+    decide: (card) => card.title.startsWith("Click") ? "yes" : "no",
   });
   await run();
   assert.equal(ui.cards.at(-1).title, "The page went to another site. Continue there?");
@@ -327,6 +328,7 @@ test("unknown tools, unknown arguments and bad types are rejected as recoverable
       call("click", { id: "1" }), // numeric strings are accepted
       answer("ok"),
     ],
+    decide: () => "yes",
   });
   assert.equal(await run(), "ok");
   const r = results(agent);
@@ -466,7 +468,7 @@ test("page text is labelled as untrusted in tool results", async () => {
 test("answers' links are limited to pages the agent read", async () => {
   const { run, agent } = setup({ sites: { [SHOP]: page("Shop", "hi") }, replies: [answer("ok")] });
   await run();
-  assert.deepEqual([...agent.sources], ["https://shop.example"]);
+  assert.deepEqual([...agent.sources], ["https://shop.example/"]);
 });
 
 test("find_in_page keeps highlighted targets document-bound without approval", async () => {
@@ -505,13 +507,15 @@ test("the model's reasoning is passed to the UI for display", async () => {
   assert.deepEqual(ui.thinks, ["check the page first", "nothing more to do, finishing"]);
 });
 
-test("go_to opens a same-site address, relative or absolute, without approval", async () => {
+test("go_to asks before even a plain same-site path", async () => {
   const { run, ui, agent } = setup({
     sites: { [SHOP]: page("Shop", "home"), [`${SHOP}repo/tree/main`]: page("Files", "README.md model.safetensors") },
     replies: [call("go_to", { url: "/repo/tree/main" }), answer("2 files")],
+    decide: () => "yes",
   });
   assert.equal(await run(), "2 files");
-  assert.equal(ui.cards.length, 0);
+  assert.equal(ui.cards.length, 1);
+  assert.equal(ui.cards[0].title, "Open this address?");
   assert.match(results(agent)[0], /model\.safetensors/);
 });
 
@@ -541,7 +545,7 @@ test("go_to asks before an address that looks like it changes something", async 
 });
 
 test("go_to asks before a same-site address with a query or on another origin", async () => {
-  for (const url of [`${SHOP}search?q=secret`, "https://sub.shop.example/x"]) {
+  for (const url of [`${SHOP}search?q=secret`, `${SHOP}collect/secret-token`, "https://sub.shop.example/x"]) {
     const { run, ui, web } = setup({
       sites: { [SHOP]: page("Shop", "home"), [url]: page("X", "x") },
       replies: [call("go_to", { url }), answer("ok")],
