@@ -226,8 +226,75 @@
       else if (BLOCK.has(tag)) push("\n");
     }
 
+    // The product facts are added after the visible text, outside HARD_CAP, so a long page never pushes them out.
+    const ld = structuredData();
     walk(document.body, 0);
+    if (ld) out.push(ld), srcs.push(null);
     return { out, srcs, tokens };
+  }
+
+  // ---------- structured data ----------
+  const LD_CAP = 20_000;
+  const LD_ROWS = 200;
+  const ldTypes = (o) => [].concat(o?.["@type"] || []).map(String);
+  const ldText = (v) => clean(typeof v === "object" && v ? v.name ?? v["@value"] ?? "" : v == null ? "" : String(v));
+  const schemaTail = (v) => ldText(v).replace(/^https?:\/\/schema\.org\//i, "");
+
+  function ldOffer(offers) {
+    const o = [].concat(offers || [])[0];
+    if (!o || typeof o !== "object") return "";
+    const spec = [].concat(o.priceSpecification || [])[0] || {};
+    const cur = ldText(o.priceCurrency ?? spec.priceCurrency);
+    const price = o.lowPrice != null && o.highPrice != null && o.lowPrice !== o.highPrice ? `${ldText(o.lowPrice)}–${ldText(o.highPrice)}`
+      : ldText(o.price ?? o.lowPrice ?? spec.price);
+    return [price && (cur ? `${price} ${cur}` : price), schemaTail(o.availability)].filter(Boolean).join(", ");
+  }
+
+  /** One line per product; a variant's own name usually already says its color and size. */
+  function ldProductLine(p, prefix) {
+    const name = ldText(p.name);
+    const extra = ["color", "size", "material"].map((k) => ldText(p[k])).filter((v) => v && !name.toLowerCase().includes(v.toLowerCase()));
+    const offer = ldOffer(p.offers);
+    return clip(`${prefix}${name || "(unnamed)"}${extra.length ? ` (${extra.join(", ")})` : ""}${offer ? ` — ${offer}` : ""}`, 240);
+  }
+
+  /**
+   * Product facts the page publishes as JSON-LD for search engines. Stores often list every variant (each color,
+   * size and its price and stock) there while the page shows them only as unlabeled swatches. Page-authored like
+   * the rest of the text, so equally untrusted. Other JSON-LD types (articles, breadcrumbs, organizations) repeat
+   * what the page shows and are left out.
+   */
+  function structuredData() {
+    const products = [];
+    const collect = (node, depth) => {
+      if (!node || typeof node !== "object" || depth > 6) return;
+      if (Array.isArray(node)) return node.forEach((n) => collect(n, depth + 1));
+      const types = ldTypes(node);
+      if (types.some((t) => t === "Product" || t === "ProductGroup")) return void products.push(node);
+      if (node["@graph"]) collect(node["@graph"], depth + 1);
+      for (const el of [].concat(node.itemListElement || [])) collect(el?.item ?? el, depth + 1);
+    };
+    for (const s of document.querySelectorAll?.('script[type="application/ld+json"]') || []) {
+      try {
+        collect(JSON.parse(s.textContent || ""), 0);
+      } catch {} // sites ship broken JSON-LD; the visible page still reads fine
+    }
+    if (!products.length) return "";
+    const lines = [];
+    let rows = 0;
+    for (const p of products) {
+      const variants = [].concat(p.hasVariant || []).filter((v) => v && typeof v === "object");
+      const brand = ldText(p.brand);
+      let head = ldProductLine(p, `${ldTypes(p).includes("ProductGroup") ? "Product group" : "Product"}: `);
+      if (brand) head += ` · brand ${brand}`;
+      if (variants.length) head += ` · ${variants.length} variant${variants.length === 1 ? "" : "s"}`;
+      lines.push(head);
+      for (const v of variants) if (rows++ < LD_ROWS) lines.push(ldProductLine(v, "- "));
+    }
+    if (rows > LD_ROWS) lines.push(`- …(${rows - LD_ROWS} more variants not shown)`);
+    let text = lines.join("\n");
+    if (text.length > LD_CAP) text = text.slice(0, text.lastIndexOf("\n", LD_CAP)) + "\n- …(truncated)";
+    return `\n\n## Structured product data (from the page's JSON-LD)\n${text}\n`;
   }
 
   const tidy = (s) => s.replace(/[ \t]+/g, " ").replace(/ *\n */g, "\n").replace(/\n{3,}/g, "\n\n");
@@ -265,7 +332,7 @@
 
   /**
    * Case-insensitive search over exactly the text readPage returns, so it sees nothing read_page wouldn't (no
-   * sensitive field values, nothing hidden). Each match reports its readPage part, the text around it and the
+   * sensitive field values, nothing hidden beyond the structured product data). Each match reports its readPage part, the text around it and the
    * element it sits in, which gets an id so it can be highlighted.
    */
   function findText({ query = "", maxChars = 12000, max = 10 }) {

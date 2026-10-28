@@ -85,7 +85,7 @@ class Ev {
 }
 const stub = () => ({ style: {}, isConnected: true, setAttribute() {}, appendChild() {}, remove() {}, attachShadow: stub });
 
-function page(body) {
+function page(body, { ld = [] } = {}) {
   const all = [];
   const index = (e) => (all.push(e), e.childNodes?.forEach((c) => c.nodeType === 1 && index(c)));
   index(body);
@@ -94,7 +94,7 @@ function page(body) {
     title: "Shop",
     documentElement: { lang: "en", scrollHeight: 1000, appendChild() {} },
     createElement: stub,
-    querySelectorAll: () => [],
+    querySelectorAll: (sel) => (sel.includes("ld+json") ? ld.map((textContent) => ({ textContent })) : []),
     getElementById: (id) => all.find((e) => e.attrs.id === id) || null,
   };
   for (const e of all) e.doc = document;
@@ -364,4 +364,41 @@ test("watchText returns the page text when it differs from the last hash, and wa
   const r = await later;
   assert.equal(r.changed, true);
   assert.match(r.text, /\$47\.50/);
+});
+
+test("read_page ends with the product variants a page publishes as JSON-LD, and find_in_page searches them", async () => {
+  const variant = (color, code, price, stock) => ({
+    "@type": "Product", sku: code, name: `PLA Matte - ${color} (${code}) / Refill / 1kg`,
+    offers: { "@type": "Offer", price, priceCurrency: "USD", availability: `https://schema.org/${stock}` },
+  });
+  const group = {
+    "@context": "https://schema.org", "@type": "ProductGroup", name: "PLA Matte", brand: { "@type": "Brand", name: "Bambu Lab" },
+    hasVariant: [variant("Ivory White", "11100", "19.99", "InStock"), variant("Sakura Pink", "11201", "19.99", "OutOfStock"),
+      { "@type": "Product", name: "PLA Matte Sampler", color: "Assorted", offers: [{ "@type": "AggregateOffer", lowPrice: 5, highPrice: 9, priceCurrency: "USD" }] }],
+  };
+  const p = page(new El("body", {}, [new El("h1", {}, ["PLA Matte"]), new El("button", { "aria-label": "swatch" })]), {
+    ld: ["{not json", JSON.stringify({ "@context": "https://schema.org", "@graph": [{ "@type": "BreadcrumbList", name: "Home" }, group] })],
+  });
+  const { text } = await p.send("readPage", {});
+  assert.match(text, /## Structured product data \(from the page's JSON-LD\)\nProduct group: PLA Matte · brand Bambu Lab · 3 variants\n/);
+  assert.match(text, /- PLA Matte - Ivory White \(11100\) \/ Refill \/ 1kg — 19\.99 USD, InStock\n/);
+  assert.match(text, /- PLA Matte - Sakura Pink \(11201\) \/ Refill \/ 1kg — 19\.99 USD, OutOfStock/);
+  assert.match(text, /- PLA Matte Sampler \(Assorted\) — 5–9 USD/);
+  assert.doesNotMatch(text, /Home/);
+  assert.ok(text.indexOf("Structured product data") > text.indexOf("swatch"), "visible text comes first");
+  const found = await p.send("find", { query: "sakura pink" });
+  assert.equal(found.total, 1);
+  assert.equal(found.matches[0].kind, "text");
+  assert.equal(found.matches[0].id, null);
+});
+
+test("pages without product JSON-LD read as before, and huge variant lists are capped", async () => {
+  const plain = page(new El("body", {}, [new El("p", {}, ["Hello"])]), { ld: [JSON.stringify({ "@type": "Article", name: "Post" })] });
+  assert.doesNotMatch((await plain.send("readPage", {})).text, /Structured product data/);
+  const many = Array.from({ length: 250 }, (_, i) => ({ "@type": "Product", name: `Shade ${i}` }));
+  const big = page(new El("body", {}, [new El("p", {}, ["Hello"])]), { ld: [JSON.stringify([{ "@type": "Product", name: "Paint", hasVariant: many }])] });
+  const { text } = await big.send("readPage", { maxChars: 100_000 });
+  assert.match(text, /Paint · 250 variants/);
+  assert.match(text, /- Shade 199\n- …\(50 more variants not shown\)/);
+  assert.doesNotMatch(text, /Shade 200/);
 });
