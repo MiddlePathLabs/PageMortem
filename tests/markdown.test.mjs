@@ -245,6 +245,19 @@ test("a redone table that adds, drops or misshapes is refused", () => {
   assert.equal(chat.tableProblem(good.replace("| Region |", "| Re\\|gion |"), html), "the model added words that aren't in the table (“re”, “gion”)");
 });
 
+test("a redone table may not change where its links and images point", () => {
+  const swap = (from, to) => chat.tableProblem(good.replace(from, to), html);
+  assert.match(swap("https://site.example/eu", "https://evil.example/eu"), /links to an address that isn't in the table \(https:\/\/evil/);
+  assert.match(swap("https://site.example/eu", "javascript:alert(1)"), /links to an address/);
+  assert.match(swap("https://site.example/i.png", "https://evil.example/t.png"), /links to an address/);
+  assert.match(swap("| EU | 3 |", "| EU | <https://evil.example> 3 |"), /links to an address/);
+  assert.match(swap("| EU | 3 |", "| EU | ![up](https://site.example/i.png) 3 |"), /images that aren't in the table/);
+  assert.match(swap("| EU | 3 |", '| EU | <a href="https://evil.example">3</a> |'), /contains HTML/);
+  // The converter percent-encodes parentheses; a model writing them encoded or not is the same address.
+  const parens = html.replace("https://site.example/eu", "https://site.example/Planet_(x)");
+  assert.equal(chat.tableProblem(good.replace("https://site.example/eu", "https://site.example/Planet_%28x%29"), parens), "");
+});
+
 test("repairTable sends the reasons and HTML, unwraps a fence and checks the answer", async () => {
   const sent = [];
   const llm = { chat: async (req) => (sent.push(req), { content: "```markdown\n" + good + "\n```" }) };
