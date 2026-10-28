@@ -23,6 +23,7 @@ const state = {
   confirms: new Set(), // resolvers of open approval prompts
   keepPages: false, // Ask: keep earlier pages in the conversation when the page changes
   sessionGrants: new Set(), // agent "Always allow" choices, kept until a new conversation
+  followups: newFollowups(), // earlier Agent and skill turns, and the skill still active (lib/followups.js)
   contextPages: new Map(),
   excludedPages: new Set(),
   contextTabs: [],
@@ -732,7 +733,7 @@ function saveNow() {
   const context = contextSnapshot();
   if (!thread.entries.length && !context.pages.some(([, e]) => e.pinned)) return removeThread(thread.tabId).catch(() => {});
   // storeThread copies the thread before its first await, so later changes don't leak into this write.
-  return storeThread({ tabId: thread.tabId, updated: Date.now(), entries: thread.entries, chat: state.chat.snapshot(), context })
+  return storeThread({ tabId: thread.tabId, updated: Date.now(), entries: thread.entries, chat: state.chat.snapshot(), context, followups: state.followups })
     .catch((e) => console.warn("PageMortem: couldn't keep this conversation", e));
 }
 
@@ -748,6 +749,8 @@ async function showThread(tabId) {
   }
   state.thread = { tabId, entries };
   state.chat.restore(stored?.chat);
+  state.followups = stored?.followups || newFollowups();
+  renderSkillChip();
   state.contextPages.clear();
   for (const [key, entry] of stored?.context?.pages || []) state.contextPages.set(key, entry);
   state.excludedPages.clear();
@@ -898,26 +901,39 @@ async function runAgent(task, skill = null) {
   bot.links(agent.sources);
   if (skill) bot.note(`Using skill @${skill.name}${skill.files?.length ? ` (${skill.files.length} file${skill.files.length === 1 ? "" : "s"})` : ""}. It cannot approve actions.`);
   setRunning({ stop: () => agent.stop() });
+  const followups = state.followups; // this conversation's, even if the user switches tabs meanwhile
+  let result = "";
   try {
-    const answer = await agent.run(task, { tabId: active.id, otherTabs: tabs.filter((t) => t.id !== active.id), selection, skill });
+    const earlier = earlierTurnsBlock(followups);
+    const answer = await agent.run(task, { tabId: active.id, otherTabs: tabs.filter((t) => t.id !== active.id), selection, skill, earlier });
     bot.citations(agent.citations);
     bot.set(answer);
+    result = answer;
   } catch (e) {
+    result = isAbort(e) ? "(stopped by the user)" : `(failed: ${e.message || e})`;
     if (isAbort(e)) bot.set("_Stopped. Actions already sent to the page may still complete; Stop does not undo them._");
     else bot.error(e);
   } finally {
+    const ended = await browser.tabs.get(agent.focus ?? active.id).catch(() => null);
+    recordTurn(followups, { kind: "agent", skill: skill?.name || null, task, answer: result, url: ended?.url, title: ended?.title });
+    saveSoon();
     bot.finish();
     bot.stats(meter);
   }
 }
 
-/** A prompt skill answers once. It does not enter the agent loop or inherit Ask's system prompt. */
+/**
+ * A prompt skill answers in one request. It does not enter the agent loop or inherit Ask's system prompt, but it sees
+ * its own earlier answers in this conversation, so a follow-up such as "again" or "shorter" works.
+ */
 async function runPromptSkill(skill, task) {
   const bot = addBot({ raw: skill.output === "raw" });
   const ctrl = new AbortController();
   const meter = new Meter();
   setRunning({ stop: () => ctrl.abort() });
   bot.note(`Using skill @${skill.name}${skill.files?.length ? ` (${skill.files.length} file${skill.files.length === 1 ? "" : "s"})` : ""}.`);
+  const followups = state.followups;
+  const history = skillHistory(followups, skill.name);
   try {
     let image = null;
     let pageText = "";
@@ -942,7 +958,7 @@ async function runPromptSkill(skill, task) {
     }
     const llm = metered(state.llm, meter);
     const ask = (images) => {
-      const req = buildSkillRequest({ skill, task, pageText, selection, image, images, settings: state.settings });
+      const req = buildSkillRequest({ skill, task, pageText, selection, image, images, settings: state.settings, history });
       return llm.chat({ ...req, stream: true, signal: ctrl.signal, onDelta: (t, r) => { bot.think(r); bot.stream(t); } });
     };
     const hasImages = !!image || skillImages(skill).length > 0;
@@ -958,6 +974,8 @@ async function runPromptSkill(skill, task) {
     }
     if (skill.output === "raw") bot.setRaw(unwrapFence(r.content));
     else bot.set(r.content);
+    recordTurn(followups, { kind: "skill", skill: skill.name, task, answer: r.content });
+    saveSoon();
   } catch (e) {
     if (isAbort(e)) bot.note("Stopped.");
     else bot.error(e);
@@ -1093,8 +1111,11 @@ function send() {
   const input = $("input");
   const text = input.value.trim();
   if (!text) return;
-  const route = routeSkill(text, state.skills, state.mode);
+  let route = routeSkill(text, state.skills, state.mode);
   if (route?.error) return composerError(route.error);
+  // A skill named at the start of a message stays active for the messages after it.
+  if (route) setActiveSkill(route.skill.name);
+  else if (activeSkill()) route = { skill: activeSkill(), task: text };
   composerError("");
   input.value = "";
   input.style.height = "auto";
@@ -1105,6 +1126,30 @@ function send() {
     if (route.skill.kind === "agent") return runAgent(route.task, route.skill);
     return runPromptSkill(route.skill, route.task);
   });
+}
+
+/** The skill that stays active after @name, when it still exists and works in this mode. */
+function activeSkill() {
+  const skill = state.skills.find((s) => s.name === state.followups.skill);
+  return skill && (skill.kind !== "agent" || state.mode === "agent") ? skill : null;
+}
+
+function setActiveSkill(name) {
+  state.followups.skill = name;
+  renderSkillChip();
+  saveSoon();
+}
+
+/** The chip above the message box showing the active skill, with a button to stop using it. */
+function renderSkillChip() {
+  const chip = $("skillChip");
+  const name = state.followups.skill;
+  const skill = state.skills.find((s) => s.name === name);
+  chip.hidden = !skill;
+  if (!skill) return;
+  const idle = skill.kind === "agent" && state.mode !== "agent";
+  chip.classList.toggle("idle", idle);
+  $("skillChipName").textContent = `Using @${name}${idle ? " (in Agent mode only)" : ""}`;
 }
 
 function setMode(mode) {
@@ -1123,6 +1168,7 @@ function setMode(mode) {
     ? "Agent starts on the active tab and can read selected tabs. These are starting tabs, not a navigation restriction. Further reads and actions appear in the task log; approvals still apply."
     : "Ask uses the pages below. Removing a source resets model conversation history, including earlier answers.";
   renderContext();
+  renderSkillChip();
   browser.storage.local.set({ mode }).catch(() => {});
 }
 
@@ -1424,6 +1470,7 @@ async function applySettings() {
   state.settings = await loadSettings();
   state.llm = new LLM(state.settings);
   state.skills = await loadSkills().catch(() => state.skills);
+  renderSkillChip();
   checkSetup();
 }
 
@@ -1537,9 +1584,15 @@ async function init() {
   $("restore").addEventListener("click", runRestore);
   $("groupTabs").addEventListener("click", () => guard(runGroupTabs));
   $("jump").addEventListener("click", () => scrollDown(true));
+  $("skillChipClose").addEventListener("click", () => {
+    setActiveSkill(null);
+    $("input").focus();
+  });
   $("newChat").addEventListener("click", () => {
     state.chat.reset();
     state.sessionGrants.clear();
+    state.followups = newFollowups();
+    renderSkillChip();
     state.contextPages.clear();
     state.excludedPages.clear();
     $("contextStatus").textContent = "";
@@ -1573,8 +1626,11 @@ async function init() {
     if (area !== "local") return;
     if (isSkillChange(changes)) {
       const next = applySkillChanges(state.skills, changes);
-      if (next) state.skills = next;
-      else loadSkills().then((list) => { state.skills = list; }).catch(() => {});
+      // A removed or renamed skill drops its chip.
+      if (next) {
+        state.skills = next;
+        renderSkillChip();
+      } else loadSkills().then((list) => { state.skills = list; renderSkillChip(); }).catch(() => {});
     }
     if (!changes.settings) return;
     // A run keeps the settings it started with; changes made meanwhile apply when it ends.

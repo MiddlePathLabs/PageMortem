@@ -71,6 +71,10 @@
     <p class="mode-help" id="modeHelp">Reads the included pages. Does not interact with websites.</p>
     <p id="composerError" class="composer-error" role="status" hidden></p>
     <div id="skillMenu" class="skill-menu" hidden role="listbox" aria-label="Skills"></div>
+    <div id="skillChip" class="skill-chip" hidden>
+      <span id="skillChipName"></span>
+      <button id="skillChipClose" type="button" aria-label="Stop using this skill" title="Stop using this skill">×</button>
+    </div>
     <div class="inputrow">
       <textarea id="input" rows="2" placeholder="Ask about this page, or @skill…" aria-label="Message" aria-autocomplete="list" aria-controls="skillMenu" aria-expanded="false"></textarea>
       <button id="send" class="primary" aria-label="Send">Send</button>
@@ -86,6 +90,7 @@
   <script src="../lib/threads.js"></script>
   <script src="../lib/evidence.js"></script>
   <script src="../lib/skills.js"></script>
+  <script src="../lib/followups.js"></script>
   <script src="../lib/agent.js"></script>
   <script src="../lib/groups.js"></script>
   <script src="sidebar.js"></script>
