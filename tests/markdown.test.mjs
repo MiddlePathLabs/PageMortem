@@ -248,11 +248,24 @@ test("a redone table that adds, drops or misshapes is refused", () => {
 test("a redone table may not change where its links and images point", () => {
   const swap = (from, to) => chat.tableProblem(good.replace(from, to), html);
   assert.match(swap("https://site.example/eu", "https://evil.example/eu"), /links to an address that isn't in the table \(https:\/\/evil/);
-  assert.match(swap("https://site.example/eu", "javascript:alert(1)"), /links to an address/);
-  assert.match(swap("https://site.example/i.png", "https://evil.example/t.png"), /links to an address/);
+  assert.match(swap("https://site.example/eu", "javascript:alert(1)"), /form PageMortem doesn't check/);
+  assert.match(swap("https://site.example/eu", "javascript:alert%281%29"), /links to an address/);
+  assert.match(swap("https://site.example/i.png", "https://evil.example/t.png"), /shows an image that isn't in the table/);
   assert.match(swap("| EU | 3 |", "| EU | <https://evil.example> 3 |"), /links to an address/);
   assert.match(swap("| EU | 3 |", "| EU | ![up](https://site.example/i.png) 3 |"), /images that aren't in the table/);
   assert.match(swap("| EU | 3 |", '| EU | <a href="https://evil.example">3</a> |'), /contains HTML/);
+  // Link forms the strict pattern doesn't read are refused, not skipped.
+  assert.match(swap("(https://site.example/eu)", '(<https://evil.example/eu> "t")'), /form PageMortem doesn't check/);
+  assert.match(swap("(https://site.example/eu)", "( https://evil.example/eu)"), /form PageMortem doesn't check/);
+  assert.match(swap("(https://site.example/eu)", '(https://site.example/eu "title")'), /form PageMortem doesn't check/);
+  assert.match(swap("](https://site.example/eu)", "] (https://evil.example/eu)"), /form PageMortem doesn't check/);
+  // An image may only show the table's images, and a link only go where the table's links go.
+  assert.match(swap("![up](https://site.example/i.png)", "![up](https://site.example/eu)"), /shows an image that isn't in the table/);
+  assert.match(swap("[1 &amp; 2](https://site.example/eu)", "[1 &amp; 2](https://site.example/i.png)"), /links to an address/);
+  assert.match(swap("[1 &amp; 2](https://site.example/eu)", "[![up](https://site.example/i.png)](https://evil.example)"), /links to an address/);
+  // An escaped backslash doesn't escape the tag after it.
+  assert.match(swap("| EU | 3 |", '| EU | \\\\<a href="https://evil.example">3</a> |'), /contains HTML/);
+  assert.equal(swap("| EU | 3 |", "| EU | 3 < 5 |").includes("HTML"), false);
   // The converter percent-encodes parentheses; a model writing them encoded or not is the same address.
   const parens = html.replace("https://site.example/eu", "https://site.example/Planet_(x)");
   assert.equal(chat.tableProblem(good.replace("https://site.example/eu", "https://site.example/Planet_%28x%29"), parens), "");
