@@ -412,6 +412,327 @@
     return best && bestText.length > 600 ? { root: best, text: bestText } : { root: document.body, text: document.body.innerText || "" };
   }
 
+  // ---------- Markdown export ----------
+  // Copy as Markdown converts the DOM in code, without a model, so nothing is shortened or reworded.
+  const MD_CAP = 2_000_000;
+  const MD_INLINE = new Set([
+    "A", "ABBR", "B", "BDI", "BDO", "BR", "CITE", "CODE", "DATA", "DEL", "DFN", "EM", "FONT", "I", "IMG", "INS", "KBD",
+    "LABEL", "MARK", "Q", "S", "SAMP", "SMALL", "SPAN", "STRIKE", "STRONG", "SUB", "SUP", "TIME", "TT", "U", "VAR", "WBR",
+  ]);
+  // Form controls are left out: their values may be private, and their labels are interface, not content.
+  const MD_DROP = new Set(["BUTTON", "INPUT", "SELECT", "TEXTAREA", "OPTION", "DIALOG", "MENU"]);
+  const MD_TABLE_ROLES = new Set(["table", "grid", "treegrid"]);
+  const MD_CELL_ROLES = new Set(["cell", "gridcell", "columnheader", "rowheader"]);
+  const mdKids = (el) => (el.shadowRoot ? [...el.shadowRoot.childNodes, ...el.childNodes] : [...el.childNodes]);
+  const mdRole = (el) => el.getAttribute("role") || "";
+  const mdRun = (s, ch) => Math.max(0, ...(s.match(new RegExp(`\\${ch}+`, "g")) || []).map((m) => m.length));
+
+  /** Escapes text so it reads as itself, not as Markdown. Underscores inside words (snake_case) are left alone. */
+  function mdEscape(s) {
+    return s
+      .replace(/[\\`*[\]]/g, "\\$&")
+      .replace(/_/g, (m, i, all) => (/\w/.test(all[i - 1] || "") && /\w/.test(all[i + 1] || "") ? m : "\\_"))
+      .replace(/<(?=[A-Za-z/!?])/g, "\\<");
+  }
+  /** Escapes what would start a heading, quote, list or rule at the start of a line. */
+  const mdLineStart = (l) =>
+    l.replace(/^([#>]|[-+=](?=\s|$)|[-=]+\s*$)/, "\\$1").replace(/^(\d+)([.)])(?=\s|$)/, "$1\\$2");
+  const mdUrl = (u) => u.replace(/[()\s|]/g, (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0"));
+  function mdResolve(href, schemes = /^(https?|mailto|ftp):$/) {
+    try {
+      const u = new URL(href, document.baseURI || location.href);
+      return schemes.test(u.protocol) ? u.href : "";
+    } catch {
+      return "";
+    }
+  }
+  function mdWrap(s, mark) {
+    const t = s.trim();
+    return t ? s.match(/^\s*/)[0] + mark + t + mark + s.match(/\s*$/)[0] : s;
+  }
+  function mdCode(t) {
+    if (!t) return "";
+    const ticks = "`".repeat(mdRun(t, "`") + 1);
+    const pad = t.startsWith("`") || t.endsWith("`") ? " " : "";
+    return ticks + pad + t + pad + ticks;
+  }
+
+  function mdSkip(el, env) {
+    return (
+      SKIP.has(el.tagName) || MD_DROP.has(el.tagName) || el.getAttribute("aria-hidden") === "true" ||
+      el.hasAttribute("data-pagemortem-ui") || !isVisible(el) ||
+      // Site navigation is chrome, unless the user selected it.
+      (!env.range && (el.tagName === "NAV" || mdRole(el) === "navigation")) ||
+      (env.range && !env.range.intersectsNode(el))
+    );
+  }
+
+  /** Whether el is laid out as a block. An inline element that wraps blocks (a link around a whole card) counts as one. */
+  function mdIsBlock(el, env) {
+    let b = env.blocks.get(el);
+    if (b !== undefined) return b;
+    if (MD_INLINE.has(el.tagName)) b = false;
+    else if (el.tagName.includes("-") && typeof getComputedStyle === "function") b = !getComputedStyle(el).display.startsWith("inline");
+    else b = true;
+    if (!b) b = mdKids(el).some((c) => c.nodeType === Node.ELEMENT_NODE && mdIsBlock(c, env));
+    env.blocks.set(el, b);
+    return b;
+  }
+
+  function mdText(node, env) {
+    let t = node.nodeValue || "";
+    const r = env.range;
+    if (r) {
+      if (!r.intersectsNode(node)) return "";
+      if (node === r.endContainer) t = t.slice(0, r.endOffset);
+      if (node === r.startContainer) t = t.slice(r.startOffset);
+    }
+    return mdEscape(t.replace(/\s+/g, " "));
+  }
+
+  function mdInline(node, env) {
+    if (node.nodeType === Node.TEXT_NODE) return mdText(node, env);
+    if (node.nodeType !== Node.ELEMENT_NODE || mdSkip(node, env)) return "";
+    const el = node;
+    const tag = el.tagName;
+    if (tag === "BR") return "\n";
+    if (tag === "IMG") return mdImage(el);
+    if (tag === "CODE" || tag === "KBD" || tag === "SAMP" || tag === "TT") return mdCode(clean(el.textContent));
+    const inner = mdKids(el).map((c) => mdInline(c, env)).join("");
+    if (tag === "A") return mdLink(el, inner);
+    if (tag === "STRONG" || tag === "B") return mdWrap(inner, "**");
+    if (tag === "EM" || tag === "I") return mdWrap(inner, "*");
+    if (tag === "DEL" || tag === "S" || tag === "STRIKE") return mdWrap(inner, "~~");
+    return inner;
+  }
+
+  function mdLink(el, text) {
+    const url = mdResolve(el.getAttribute("href") || "");
+    const t = text.replace(/\s+/g, " ").trim();
+    if (!url || !t) return text;
+    if (t === mdEscape(url)) return `<${url}>`;
+    return text.match(/^\s*/)[0] + `[${t}](${mdUrl(url)})` + text.match(/\s*$/)[0];
+  }
+
+  function mdImage(el) {
+    // Icons and spacers are noise; the page text serializer skips them the same way.
+    if (el.width && el.height && el.width < 48 && el.height < 48) return "";
+    // blob: and data: images can't be fetched from the copied text, and data: ones can be megabytes long.
+    const url = mdResolve(el.currentSrc || el.getAttribute("src") || "", /^https?:$/);
+    if (!url) return "";
+    const alt = clean(el.getAttribute("alt") || "").replace(/[[\]\\]/g, "\\$&");
+    return `![${alt}](${mdUrl(url)})`;
+  }
+
+  /** A run of inline Markdown as paragraphs: blank lines (two <br>s) split it, single line breaks become hard breaks. */
+  function mdPara(s) {
+    return s
+      .split(/\n\s*\n/)
+      .map((p) => p.split("\n").map((l) => mdLineStart(l.replace(/\s+/g, " ").trim())).filter(Boolean).join("  \n"))
+      .filter(Boolean)
+      .join("\n\n");
+  }
+
+  /** The children of el as Markdown blocks. */
+  function mdBlocks(el, env) {
+    const out = [];
+    let run = "";
+    const flush = () => {
+      const p = mdPara(run);
+      if (p) out.push(p), (env.len += p.length);
+      run = "";
+    };
+    for (const c of mdKids(el)) {
+      if (env.len > MD_CAP) {
+        env.cut = true;
+        break;
+      }
+      if (c.nodeType === Node.ELEMENT_NODE && !mdSkip(c, env) && mdIsBlock(c, env)) {
+        flush();
+        out.push(...mdBlock(c, env).filter(Boolean));
+      } else run += mdInline(c, env);
+    }
+    flush();
+    return out;
+  }
+
+  /** Blocks of one item, kept tight: a nested list follows its text on the next line, not after a blank one. */
+  function mdJoinItem(blocks) {
+    return blocks.reduce((s, b, i) => (i ? s + (/^(- |\d+\. )/.test(b) ? "\n" : "\n\n") : "") + b, "");
+  }
+
+  function mdBlock(el, env) {
+    const tag = el.tagName;
+    const h = /^H([1-6])$/.exec(tag);
+    if (h) {
+      const t = mdKids(el).map((c) => mdInline(c, env)).join("").replace(/\s+/g, " ").trim();
+      return t ? ["#".repeat(Number(h[1])) + " " + t] : [];
+    }
+    if (tag === "HR") return ["---"];
+    if (tag === "PRE") {
+      const pre = mdPre(el);
+      env.len += pre.length;
+      return [pre];
+    }
+    if (tag === "UL" || tag === "OL") return mdList(el, env);
+    if (tag === "TABLE" || MD_TABLE_ROLES.has(mdRole(el))) {
+      const table = mdTable(el, env);
+      if (table) return table;
+    }
+    if (tag === "BLOCKQUOTE") {
+      const inner = mdBlocks(el, env).join("\n\n");
+      return inner ? [inner.split("\n").map((l) => (l ? "> " + l : ">")).join("\n")] : [];
+    }
+    if (tag === "DT") {
+      const t = mdKids(el).map((c) => mdInline(c, env)).join("").replace(/\s+/g, " ").trim();
+      return t ? [mdWrap(t, "**")] : [];
+    }
+    const blocks = mdBlocks(el, env);
+    // A link around a whole card: link its title, so a listing keeps where each item goes.
+    const url = tag === "A" && mdResolve(el.getAttribute("href") || "");
+    const at = url ? blocks.findIndex((b) => !b.includes("\n") && !b.includes("](")) : -1;
+    if (at >= 0) {
+      const [, mark, text] = /^(#{1,6} )?(.*)$/.exec(blocks[at]);
+      blocks[at] = `${mark || ""}[${text}](${mdUrl(url)})`;
+    }
+    return blocks;
+  }
+
+  function mdPre(el) {
+    const code = (el.innerText ?? el.textContent ?? "").replace(/\n+$/, "");
+    const cls = `${el.getAttribute("class") || ""} ${el.querySelector?.("code")?.getAttribute("class") || ""}`;
+    const lang = /(?:^|\s)lang(?:uage)?-([\w+#.-]+)/.exec(cls)?.[1] || "";
+    const fence = "`".repeat(Math.max(3, mdRun(code, "`") + 1));
+    return `${fence}${lang}\n${code}\n${fence}`;
+  }
+
+  function mdList(el, env) {
+    const ordered = el.tagName === "OL";
+    let n = parseInt(el.getAttribute("start") ?? "1", 10);
+    if (!Number.isFinite(n)) n = 1;
+    const items = [];
+    for (const li of mdKids(el)) {
+      if (li.nodeType !== Node.ELEMENT_NODE || mdSkip(li, env)) continue;
+      const marker = ordered ? `${n++}. ` : "- ";
+      // Task lists: the checkbox is a form control, so it is dropped with the others and shown as [x] here.
+      const box = mdKids(li).flatMap((c) => (c.nodeType === Node.ELEMENT_NODE && c.tagName !== "UL" && c.tagName !== "OL" ? [c, ...mdKids(c)] : []))
+        .find((c) => c.tagName === "INPUT" && c.getAttribute("type") === "checkbox");
+      const task = box ? (box.checked ?? box.hasAttribute("checked") ? "[x] " : "[ ] ") : "";
+      const body = mdJoinItem(li.tagName === "LI" ? mdBlocks(li, env) : mdBlock(li, env));
+      const pad = " ".repeat(marker.length);
+      items.push(body.split("\n").map((l, i) => (i ? (l ? pad + l : "") : marker + task + l)).join("\n"));
+    }
+    return items.length ? [items.join("\n")] : [];
+  }
+
+  /** Rows of cells, for <table> or an ARIA table/grid. A nested table's rows belong to it, not to this one. */
+  function mdRows(el, env) {
+    const rows = [];
+    if (el.tagName === "TABLE" && !MD_TABLE_ROLES.has(mdRole(el))) {
+      const visit = (node) => {
+        for (const c of mdKids(node)) {
+          if (c.nodeType !== Node.ELEMENT_NODE || mdSkip(c, env)) continue;
+          if (c.tagName === "TR") rows.push(mdKids(c).filter((d) => d.nodeType === Node.ELEMENT_NODE && (d.tagName === "TD" || d.tagName === "TH") && !mdSkip(d, env)));
+          else if (c.tagName === "THEAD" || c.tagName === "TBODY" || c.tagName === "TFOOT") visit(c);
+        }
+      };
+      visit(el);
+      return rows;
+    }
+    const find = (node, want, stop, out) => {
+      for (const c of mdKids(node)) {
+        if (c.nodeType !== Node.ELEMENT_NODE || mdSkip(c, env)) continue;
+        if (want(c)) out.push(c);
+        else if (!stop(c)) find(c, want, stop, out);
+      }
+      return out;
+    };
+    const isTable = (c) => c.tagName === "TABLE" || MD_TABLE_ROLES.has(mdRole(c));
+    for (const row of find(el, (c) => mdRole(c) === "row", isTable, [])) {
+      rows.push(find(row, (c) => MD_CELL_ROLES.has(mdRole(c)), (c) => isTable(c) || mdRole(c) === "row", []));
+    }
+    return rows;
+  }
+
+  const mdHead = (cell) => cell.tagName === "TH" || mdRole(cell) === "columnheader";
+
+  function mdCell(cell, env) {
+    return mdBlocks(cell, env).join("\n").replace(/ *\n+ */g, "<br>").replace(/\|/g, "\\|").trim();
+  }
+
+  /**
+   * A GFM table, or null when el is laid out as a table but holds no data: role=presentation, one column, or another
+   * table inside it. Then its cells are read as ordinary blocks. Spanned cells are filled in: a rowspan repeats its value
+   * down the rows, a colspan repeats it across header rows (whose text is then joined per column) and is left empty
+   * across data rows.
+   */
+  function mdTable(el, env) {
+    if (/^(presentation|none)$/.test(mdRole(el))) return null;
+    const rows = mdRows(el, env).filter((r) => r.length);
+    if (!rows.length || Math.max(...rows.map((r) => r.length)) < 2) return null;
+    if (rows.some((r) => r.some((c) => c.querySelector?.("table, [role=table], [role=grid], [role=treegrid]")))) return null;
+
+    const grid = rows.map(() => []);
+    rows.forEach((cells, r) => {
+      let c = 0;
+      for (const cell of cells) {
+        while (grid[r][c]) c++;
+        const cs = Math.min(Math.max(parseInt(cell.getAttribute("colspan"), 10) || 1, 1), 100);
+        const rsRaw = parseInt(cell.getAttribute("rowspan"), 10);
+        const rs = rsRaw === 0 ? rows.length - r : Math.min(Math.max(rsRaw || 1, 1), rows.length - r);
+        const value = { text: mdCell(cell, env), head: mdHead(cell) };
+        for (let dr = 0; dr < rs; dr++) for (let dc = 0; dc < cs; dc++) grid[r + dr][c + dc] = { value, first: dc === 0 };
+        c += cs;
+      }
+    });
+    const width = Math.max(...grid.map((r) => r.length));
+    if (width < 2) return null;
+
+    // Header rows: the table's <thead>, else the leading rows made only of header cells.
+    const inHead = (r) => r[0].parentElement?.parentElement?.tagName === "THEAD";
+    let heads = rows.some(inHead) ? rows.findIndex((r) => !inHead(r)) : 0;
+    if (heads < 0) heads = rows.length;
+    if (!heads) while (heads < grid.length && grid[heads].every((g) => !g || g.value.head)) heads++;
+    if (heads === grid.length) heads = Math.min(1, heads); // all headers: the first is the header, the rest are data
+
+    const text = (g, inHead) => (g && (g.first || inHead) ? g.value.text : "");
+    const header = Array.from({ length: width }, (_, c) => {
+      const parts = [];
+      for (let r = 0; r < heads; r++) {
+        const t = text(grid[r][c], true);
+        if (t && parts.at(-1) !== t) parts.push(t);
+      }
+      return parts.join(" / ");
+    });
+    const line = (cells) => `| ${cells.join(" | ")} |`;
+    const body = grid
+      .slice(heads)
+      .map((r) => Array.from({ length: width }, (_, c) => text(r[c], false)))
+      .filter((cells) => cells.some(Boolean));
+    env.tables++;
+    const out = [];
+    const caption = mdKids(el).find((c) => c.tagName === "CAPTION");
+    const captionText = caption && mdKids(caption).map((c) => mdInline(c, env)).join("").replace(/\s+/g, " ").trim();
+    if (captionText) out.push(mdWrap(captionText, "**"));
+    out.push([line(header), line(header.map(() => "---")), ...body.map(line)].join("\n"));
+    return out;
+  }
+
+  /** The selection, or else the page's main content, as Markdown. */
+  function pageMarkdown() {
+    const sel = getSelection();
+    const range = sel?.rangeCount && String(sel).trim() ? sel.getRangeAt(0) : null;
+    const env = { range, tables: 0, len: 0, blocks: new WeakMap() };
+    let root = range ? range.commonAncestorContainer : readableRoot().root;
+    if (root.nodeType !== Node.ELEMENT_NODE) root = root.parentElement;
+    let md = mdBlock(root, env).join("\n\n");
+    const title = clean(document.title);
+    if (!range && title && !/^# /m.test(md)) md = `# ${mdEscape(title)}\n\n${md}`;
+    const truncated = !!env.cut || md.length > MD_CAP;
+    if (truncated) md = md.slice(0, MD_CAP);
+    return { ...pageMeta(), markdown: md.trim(), tables: env.tables, selection: !!range, truncated };
+  }
+
   // ---------- visual helpers (overlays live in a closed shadow root the page can't style) ----------
   let overlayHost = null;
   function overlayRoot() {
@@ -1312,6 +1633,7 @@
       return { ...pageMeta(), part: p, parts: parts.length, text: parts[p - 1], doc: DOC };
     },
     find: findText,
+    markdown: () => pageMarkdown(),
     getText: ({ maxChars = 300_000 }) => {
       let { root, text: raw } = readableRoot();
       // innerText leaves out typed input values but keeps editable regions and prefilled text areas; drop the ones

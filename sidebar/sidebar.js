@@ -839,7 +839,7 @@ function setRunning(r) {
   send.textContent = r ? "Stop" : "Send";
   send.classList.toggle("stop", !!r);
   send.setAttribute("aria-label", r ? "Stop" : "Send");
-  for (const id of ["summarize", "translate", "ocr", "restore", "groupTabs", "newChat"]) $(id).disabled = !!r;
+  for (const id of ["summarize", "translate", "ocr", "markdown", "restore", "groupTabs", "newChat"]) $(id).disabled = !!r;
   for (const button of document.querySelectorAll(".modes button")) button.disabled = !!r;
   renderContext();
 }
@@ -1117,6 +1117,31 @@ async function runOcr(target = null) {
     else bot.error(e);
   } finally {
     bot.stats(meter);
+  }
+}
+
+/**
+ * Copy as Markdown: the page's main content, or the selection, converted by the content script. No model is involved,
+ * so nothing is shortened or reworded.
+ */
+async function runMarkdown() {
+  const tab = await activeTab();
+  addUser("Copy as Markdown");
+  const bot = addBot({ raw: true });
+  if (!tab?.id) return bot.error(new Error("No tab to read."));
+  try {
+    const r = await pageCall(tab.id, "markdown");
+    if (!r.markdown) return bot.error(new Error("Found no text to convert on this page."));
+    bot.setRaw(r.markdown);
+    const parts = [`${r.selection ? "Selection" : "Main content"} · ${r.markdown.length.toLocaleString()} characters`];
+    if (r.tables) parts.push(`${r.tables} table${r.tables === 1 ? "" : "s"}`);
+    if (r.truncated) parts.push("cut at 2,000,000 characters");
+    // The click's user activation usually outlasts the page call; when it doesn't, the copy button still works.
+    const copied = await navigator.clipboard.writeText(r.markdown).then(() => true, () => false);
+    parts.push(copied ? "copied" : "use the copy button to copy it");
+    bot.note(parts.join(" · "));
+  } catch (e) {
+    bot.error(e);
   }
 }
 
@@ -1689,6 +1714,7 @@ async function init() {
   $("summarize").addEventListener("click", () => guard(runSummarize));
   $("translate").addEventListener("click", () => guard(() => runTranslate("")));
   $("ocr").addEventListener("click", () => guard(() => runOcr()));
+  $("markdown").addEventListener("click", () => guard(runMarkdown));
   $("restore").addEventListener("click", runRestore);
   $("groupTabs").addEventListener("click", () => guard(runGroupTabs));
   $("jump").addEventListener("click", () => scrollDown(true));
