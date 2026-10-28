@@ -830,7 +830,7 @@ function setRunning(r) {
   send.textContent = r ? "Stop" : "Send";
   send.classList.toggle("stop", !!r);
   send.setAttribute("aria-label", r ? "Stop" : "Send");
-  for (const id of ["summarize", "translate", "restore", "groupTabs", "newChat"]) $(id).disabled = !!r;
+  for (const id of ["summarize", "translate", "ocr", "restore", "groupTabs", "newChat"]) $(id).disabled = !!r;
   for (const button of document.querySelectorAll(".modes button")) button.disabled = !!r;
   renderContext();
 }
@@ -1054,6 +1054,55 @@ async function runSummarize() {
       onProgress: (i, n) => bot.progress(i - 1, n, `Reading part ${i} of ${n}`),
     });
     bot.set(answer);
+  } catch (e) {
+    if (isAbort(e)) bot.note("Stopped.");
+    else bot.error(e);
+  } finally {
+    bot.stats(meter);
+  }
+}
+
+/**
+ * Extract text: transcribe the main image on screen, or the image the user right-clicked (target), with a fixed
+ * prompt. The capture keeps far more detail than Ask's, since small print is unreadable once downscaled.
+ */
+async function runOcr(target = null) {
+  const tab = target?.tabId != null ? await browser.tabs.get(target.tabId).catch(() => null) : await activeTab();
+  addUser(target ? "Extract text from this image" : "Extract text from the image on screen");
+  const bot = addBot({ raw: true });
+  if (!tab?.id) return bot.error(new Error("No tab to look at."));
+  const ctrl = new AbortController();
+  const meter = new Meter();
+  setRunning({ stop: () => ctrl.abort() });
+  try {
+    let shot = null;
+    if (target) {
+      if (target.frameId) bot.note("That image is inside a frame, which PageMortem can't reach; reading the main image instead.");
+      else {
+        try {
+          shot = await imageShot(tab.id, { targetElementId: target.targetElementId, srcUrl: target.srcUrl, quality: 0.92, signal: ctrl.signal });
+          if (shot.clipped) bot.note("The image is larger than the window, so only the part in view was read.");
+        } catch (e) {
+          if (isAbort(e)) throw e;
+          bot.note(`${e.message} Reading the main image instead.`);
+        }
+      }
+    }
+    if (!shot) {
+      shot = await pageShot(tab.id, { maxWidth: OCR_WIDTH, quality: 0.92, signal: ctrl.signal });
+      if (!shot.cropped) bot.note("No single image fills the view, so this reads the visible part of the page.");
+    }
+    bot.image(shot.url);
+    const { visionModel, model } = state.settings;
+    if (visionModel && visionModel !== model) bot.note(`Asking ${visionModel}.`);
+    let text;
+    try {
+      text = await ocrImage({ image: shot.url, llm: metered(state.llm, meter), settings: state.settings, signal: ctrl.signal, onDelta: (t) => bot.stream(t) });
+    } catch (e) {
+      if (isAbort(e)) throw e;
+      throw new Error(`The model didn't read the image (${e.message}). If your main model is text-only, set a vision model in Settings.`);
+    }
+    bot.setRaw(unwrapFence(text).trim() || "(no text found)");
   } catch (e) {
     if (isAbort(e)) bot.note("Stopped.");
     else bot.error(e);
@@ -1508,6 +1557,7 @@ async function consumePending() {
   if (c.kind === "translate") guard(() => runTranslate(c.selection));
   else if (c.kind === "translate-page") guard(() => runTranslate(""));
   else if (c.kind === "summarize") guard(runSummarize);
+  else if (c.kind === "ocr") guard(() => runOcr(c.image));
   else if (c.kind === "ask") {
     setMode("ask");
     $("input").focus();
@@ -1629,6 +1679,7 @@ async function init() {
   });
   $("summarize").addEventListener("click", () => guard(runSummarize));
   $("translate").addEventListener("click", () => guard(() => runTranslate("")));
+  $("ocr").addEventListener("click", () => guard(() => runOcr()));
   $("restore").addEventListener("click", runRestore);
   $("groupTabs").addEventListener("click", () => guard(runGroupTabs));
   $("jump").addEventListener("click", () => scrollDown(true));

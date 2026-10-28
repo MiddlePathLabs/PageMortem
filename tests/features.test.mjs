@@ -190,3 +190,18 @@ test("money, deletion, messages, account, settings and download actions never of
     assert.equal(t.ui.cards[0].remember, null, `${label} must not be rememberable`);
   }
 });
+
+// ---------- Extract text ----------
+test("Extract text sends the image with a fixed transcription prompt", async () => {
+  const ctx = lib();
+  const model = scriptedModel([{ content: "Line one\nLine two" }]);
+  const text = await ctx.$("ocrImage")({ image: "data:image/jpeg;base64,AAAA", llm: model, settings: SETTINGS });
+  assert.equal(text, "Line one\nLine two");
+  const req = model.calls[0];
+  assert.equal(req.temperature, 0);
+  assert.equal(req.noThinking, true);
+  assert.ok(req.maxTokens >= 4096);
+  assert.match(req.messages[0].content, /exactly as written/);
+  const parts = req.messages[1].content;
+  assert.equal(parts.find((p) => p.type === "image_url").image_url.url, "data:image/jpeg;base64,AAAA");
+});

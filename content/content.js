@@ -564,6 +564,37 @@
     return { images, viewport: { w: innerWidth, h: innerHeight }, atBottom, doc: DOC };
   }
 
+  /**
+   * The image the user right-clicked, for Extract text: found by the menu's target id, else by address. Scrolled into
+   * view first; clipped says part of it still lies outside the viewport (an image taller than the window).
+   */
+  async function imageRect({ targetElementId, srcUrl } = {}) {
+    let el = null;
+    if (targetElementId != null) {
+      try {
+        el = browser.menus.getTargetElement(targetElementId);
+      } catch {
+        /* id expired or from another frame */
+      }
+    }
+    if (!el && srcUrl) {
+      el = [...document.images].find((img) => img.currentSrc === srcUrl || absUrl(img.getAttribute("src") || "") === srcUrl) || null;
+    }
+    if (!el) throw new Error("Couldn't find that image on the page. Images inside frames aren't supported.");
+    let r = el.getBoundingClientRect();
+    if (r.top < 0 || r.bottom > innerHeight || r.left < 0 || r.right > innerWidth) {
+      el.scrollIntoView({ block: r.height > innerHeight ? "start" : "center", inline: "nearest", behavior: "instant" });
+      await nextPaint();
+      r = el.getBoundingClientRect();
+    }
+    const x = Math.max(0, r.left);
+    const y = Math.max(0, r.top);
+    const rect = { x, y, w: Math.min(innerWidth, r.right) - x, h: Math.min(innerHeight, r.bottom) - y };
+    if (rect.w < 4 || rect.h < 4) throw new Error("That image isn't visible on the page.");
+    const clipped = r.top < -1 || r.left < -1 || r.bottom > innerHeight + 1 || r.right > innerWidth + 1;
+    return { rect, clipped, viewport: { w: innerWidth, h: innerHeight } };
+  }
+
   async function markImages({ max = 60 } = {}) {
     clearOverlay();
     const found = imageCandidates({ max });
@@ -1312,6 +1343,7 @@
     rect: rectOf,
     markImages,
     listImages,
+    imageRect,
     clearMarks: () => (clearOverlay(), { ok: true }),
     collectSegments,
     applySegments,

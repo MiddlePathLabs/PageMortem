@@ -16,11 +16,12 @@ const MENU = [
   { id: "pagemortem-ask", title: "Ask about selection…", contexts: ["selection"] },
   { id: "pagemortem-summarize", title: "Summarize this page", contexts: ["page"] },
   { id: "pagemortem-translate-page", title: "Translate this page", contexts: ["page"] },
+  { id: "pagemortem-ocr", title: "Extract text from image", contexts: ["image"] },
 ];
 
 browser.runtime.onInstalled.addListener(async () => {
   await browser.menus.removeAll();
-  const parent = browser.menus.create({ id: "pagemortem", title: "PageMortem", contexts: ["selection", "page"] });
+  const parent = browser.menus.create({ id: "pagemortem", title: "PageMortem", contexts: ["selection", "page", "image"] });
   for (const m of MENU) browser.menus.create({ ...m, parentId: parent });
 });
 
@@ -31,6 +32,8 @@ browser.menus.onClicked.addListener((info, tab) => {
     kind: info.menuItemId.replace("pagemortem-", ""),
     selection: info.selectionText || "",
     tabId: tab?.id,
+    // Extract text finds the clicked image by these; targetElementId is only valid in the frame it came from.
+    image: info.menuItemId === "pagemortem-ocr" ? { tabId: tab?.id, frameId: info.frameId || 0, targetElementId: info.targetElementId, srcUrl: info.srcUrl || "" } : null,
     at: Date.now(),
   };
   browser.storage.session.set({ pendingCommand: command }).then(() =>
