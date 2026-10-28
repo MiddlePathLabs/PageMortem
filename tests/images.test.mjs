@@ -233,3 +233,40 @@ test("if the decision model can't take images, the run falls back to the vision 
   assert.equal(saved(t.web).length, 3);
   assert.equal(t.ui.steps.filter((s) => /couldn't check images/.test(s.text)).length, 1);
 });
+
+test("only clear decision-model scores count; unsure ones go to the vision model", async () => {
+  const t = gallery({ replies: [call("save_images", { match: "kittens chasing lasers" }), answer("done")], settings: { decisionModel: "d3-lite", visionModel: "qwen3-vl" } });
+  // k-1 and dog-1 get unsure scores; the rest are clear.
+  const scores = { "k-1": 0.6, "dog-1": 0.4, "k-2": 0.95, "k-3": 0.99, "cat-sleeping": 0.03, bird: 0.01 };
+  t.model.decideImage = async ({ image }) => {
+    const [, screen, k] = /crop\/(\d+)\/(\d+)/.exec(image);
+    return scores[SCREENS[screen][k].alt];
+  };
+  await t.run();
+  assert.deepEqual([...t.checks].sort(), ["dog-1", "k-1"], "the vision model saw only the unsure two");
+  assert.equal(saved(t.web).length, 3);
+  assert.match(results(t.agent)[0], /d3-lite decided 4; 2 it was unsure about went to qwen3-vl\./);
+  assert.ok(t.ui.steps.some((s) => /Checking images with d3-lite; ones it is unsure about go to qwen3-vl/.test(s.text)));
+});
+
+test("precise sends every image to the vision model, skipping the decision model", async () => {
+  const t = gallery({ replies: [call("save_images", { match: "Obama", precise: true }), answer("done")], settings: { decisionModel: "d3-lite", visionModel: "qwen3-vl" } });
+  t.model.decideImage = async () => assert.fail("the decision model must not judge a precise match");
+  await t.run();
+  assert.equal(t.checks.length, 6);
+  assert.match(results(t.agent)[0], /qwen3-vl checked 6\./);
+  assert.ok(t.ui.steps.some((s) => /Checking images with qwen3-vl \(needs knowledge, not just looking\)/.test(s.text)));
+});
+
+test("a vision model that won't identify people counts as no, and the agent is told why", async () => {
+  const t = gallery({ replies: [call("save_images", { match: "Obama", precise: true }), answer("done")], settings: { visionModel: "qwen3-vl" } });
+  const chat = t.model.chat;
+  t.model.chat = async (req) => {
+    const last = req.messages.at(-1).content;
+    if (Array.isArray(last) && /Does this image show/.test(last[0].text)) return { content: "I can't identify real people from their faces.", toolCalls: [], stats: null };
+    return chat(req);
+  };
+  await t.run();
+  assert.equal(saved(t.web).length, 0);
+  assert.match(results(t.agent)[0], /qwen3-vl declined to say who is shown in 6 images, so those count as no match/);
+});
