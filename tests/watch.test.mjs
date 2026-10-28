@@ -64,16 +64,16 @@ test("without the notifications permission the card asks for it, but only as an 
   assert.doesNotMatch(results(agent)[0], /notified/);
 });
 
-test("intervals under 15 seconds and watches over 4 hours are rejected", async () => {
-  const { run, agent, web } = setup({
+test("intervals under 15 seconds are rejected; a watch may last as long as the user asks", async () => {
+  const { run, agent, web, ui } = setup({
     start: ITEM,
     sites: { [ITEM]: item(1) },
-    replies: [call("watch", { gone: "Out of stock", every: 5 }), call("watch", { gone: "Out of stock", minutes: 600 }), answer("ok")],
+    replies: [call("watch", { gone: "Out of stock", every: 5 }), call("watch", { gone: "Out of stock", every: 30, minutes: 1440 }), answer("ok")],
   });
   await run();
   assert.match(results(agent)[0], /must be at least 15/);
-  assert.match(results(agent)[1], /must be at most 240/);
   assert.equal(web.tabs.get(1).reloads, undefined);
+  assert.match(ui.cards[0].detail, /every 30 s for up to 24 hours/);
 });
 
 test("watch needs something to look for, and returns at once when it's already there", async () => {
@@ -240,4 +240,73 @@ test("a condition that never comes true reloads on schedule and reports running 
   await run();
   assert.match(results(agent)[0], /^Stopped watching after 1 min .*The watch ran out before the change/);
   assert.ok(web.tabs.get(1).reloads >= 3 && web.tabs.get(1).reloads <= 4);
+});
+
+// ---------- Add to cart approved with the watch ----------
+const CHECKOUT = "https://shop.example/checkout";
+const restocking = (elements) => (w0 = { title: "Kettle", text: OUT, elements, onReload: (tab) => void (tab.reloads >= 1 && (w0.text = IN)) });
+
+test("an Add to cart approved with the watch is clicked without asking, once, and notifies", async () => {
+  const { run, ui, web, agent } = setup({
+    start: ITEM,
+    sites: { [ITEM]: restocking(cart) },
+    replies: [call("watch", { gone: "Out of stock", every: 15, minutes: 1440, add_to_cart: true }), call("click", { id: 1 }), call("click", { id: 1 }), answer("added")],
+    decide: (c) => (c.title.startsWith("Watch this page") ? "yes" : "no"),
+  });
+  web.granted.add("notifications");
+  await run();
+  assert.equal(ui.cards[0].title, "Watch this page, then add to cart?");
+  assert.match(ui.cards[0].detail, /Then click “Add to cart” on shop\.example once/);
+  assert.match(results(agent)[0], /approved one click on the Add to cart button/);
+  assert.match(results(agent)[1], /^Clicked “Add to cart”/);
+  assert.equal(web.log.filter(([op]) => op === "click").length, 1, "the second click was asked about and denied");
+  assert.equal(ui.cards.length, 2);
+  assert.equal(ui.cards[1].title, "Click “Add to cart”?");
+  assert.match(web.notifications.at(-1).message, /clicked “Add to cart”/);
+});
+
+test("the pre-approval covers only a plain Add to cart, and only after the change", async () => {
+  const elements = { 1: { kind: "button", label: "Buy now" }, 2: { kind: "button", label: "Add to cart and checkout" }, 3: { kind: "button", label: "Add to cart" } };
+  const { run, ui, web } = setup({
+    start: ITEM,
+    sites: { [ITEM]: restocking(elements) },
+    replies: [call("watch", { gone: "Out of stock", every: 15, add_to_cart: true }), call("click", { id: 1 }), call("click", { id: 2 }), call("click", { id: 3 }), answer("ok")],
+    decide: (c) => (c.title.startsWith("Watch this page") ? "yes" : "no"),
+  });
+  await run();
+  assert.deepEqual(ui.cards.slice(1).map((c) => c.title), ["Click “Buy now”?", "Click “Add to cart and checkout”?"]);
+  assert.equal(web.log.filter(([op]) => op === "click").length, 1);
+});
+
+test("before the change, Add to cart still asks", async () => {
+  const { run, ui } = setup({
+    start: ITEM,
+    sites: { [ITEM]: { title: "Kettle", text: OUT, elements: cart } },
+    replies: [call("click", { id: 1 }), answer("ok")],
+  });
+  await run();
+  assert.equal(ui.cards[0].title, "Click “Add to cart”?");
+});
+
+test("a pre-approved Add to cart that sends to checkout asks; one that lands there stops the agent", async () => {
+  const toCheckout = { 1: { kind: "button", label: "Add to cart", isSubmit: true, inForm: true, formMethod: "post", action: CHECKOUT } };
+  const first = setup({
+    start: ITEM,
+    sites: { [ITEM]: restocking(toCheckout) },
+    replies: [call("watch", { gone: "Out of stock", every: 15, add_to_cart: true }), call("click", { id: 1 }), answer("ok")],
+    decide: (c) => (c.title.startsWith("Watch this page") ? "yes" : "no"),
+  });
+  await first.run();
+  assert.equal(first.ui.cards.length, 2, "the form sends to checkout, so the click is asked about");
+
+  const lands = { 1: { kind: "button", label: "Add to cart", onClick: (tab, web) => web.navigate(tab, CHECKOUT) } };
+  const second = setup({
+    start: ITEM,
+    sites: { [ITEM]: restocking(lands), [CHECKOUT]: { title: "Checkout", text: "Pay now" } },
+    replies: [call("watch", { gone: "Out of stock", every: 15, add_to_cart: true }), call("click", { id: 1 }), answer("stopped")],
+    decide: (c) => (c.title.startsWith("Watch this page") ? "yes" : "no"),
+  });
+  await second.run();
+  assert.equal(second.ui.cards.length, 1);
+  assert.match(results(second.agent)[1], /Stop here: the pre-approved Add to cart click led to https:\/\/shop\.example\/checkout/);
 });
