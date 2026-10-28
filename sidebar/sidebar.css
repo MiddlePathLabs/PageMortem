@@ -183,6 +183,7 @@ main { flex: 1; min-height: 0; overflow-y: auto; padding: 12px; display: flex; f
 .confirm .title { font-weight: 600; }
 .confirm .detail { white-space: pre-wrap; font-size: 12.5px; margin: 2px 0 8px; overflow-wrap: anywhere; }
 .confirm .row { display: flex; gap: 6px; flex-wrap: wrap; }
+.steps li.card > .confirm { min-width: 0; margin: 2px 0 4px; font-size: 13px; }
 .confirm.answered { opacity: .65; }
 .confirm.answered .row { display: none; }
 .btn { border: 1px solid var(--border); background: var(--panel); border-radius: 6px; padding: 3px 10px; }

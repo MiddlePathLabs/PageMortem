@@ -475,6 +475,15 @@ function addBot({ agent = false, replay = false, raw = false } = {}) {
     foot.querySelector(".copy")?.remove();
     if (text) foot.prepend(copyButton(text));
   };
+  // Approval cards go where things happened: as the newest step of an agent run, else after the reply's notes. Then
+  // the card is at the bottom of the conversation, where the view scrolls to.
+  const placeCard = (card) => {
+    if (!list) return extra.append(card);
+    const li = el("li", "card");
+    li.append(el("span", "ic", ""), card);
+    list.append(li);
+    steps.open = true;
+  };
   let frame = 0, pendingText = "", pendingThink = "", stepCount = 0;
   const api = {
     /** Exact page URLs the answer may link to (a live Set is fine: the agent adds pages as it reads them). */
@@ -655,7 +664,7 @@ function addBot({ agent = false, replay = false, raw = false } = {}) {
         if (remember) row.append(mk(remember, "session", "", `${remember}: allowed until you start a new conversation`));
         row.append(mk("Deny", "no", "", "Denied"));
         card.append(row);
-        (list ? list.parentElement : extra).after(card);
+        placeCard(card);
         state.confirms.add(finish);
         scrollDown(true);
         row.lastChild.focus();
@@ -666,7 +675,7 @@ function addBot({ agent = false, replay = false, raw = false } = {}) {
       const card = confirmCard(details);
       card.classList.add("answered");
       card.append(el("div", "dimline", label || "Not answered: the sidebar was closed"));
-      (list ? list.parentElement : extra).after(card);
+      placeCard(card);
     },
     progress(done, total, label) {
       let bar = wrap.querySelector(".progress > div");
