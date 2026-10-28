@@ -173,6 +173,7 @@ function attachEvidence(body, sources) {
     if (manyPages) parts.push(el("div", "source-url", result.source.title || result.source.url));
     const { button, status } = passageButton(result.source, result.quote);
     parts.push(" ", button, status);
+    if (result.by) parts.push(el("div", "source-url", result.by));
     panel.replaceChildren(...parts);
   };
 
@@ -195,7 +196,7 @@ function attachEvidence(body, sources) {
     const rest = ask.filter((claim, i) => {
       if (!ranked[i]) return true;
       claim.pending = false;
-      claim.result = { ...ranked[i], kind: "match" };
+      claim.result = { ...ranked[i], kind: "match", by: `Matched by ${model} (score ${ranked[i].score.toFixed(2)})` };
       if (claim.panel.isConnected) render(claim);
       return false;
     });

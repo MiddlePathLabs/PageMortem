@@ -137,3 +137,33 @@ test("a very long page is narrowed by the question's words before reranking", as
   assert.ok(model.reranks[0].documents.some((d) => d.includes("battery")));
   assert.match(text, /^Intro\.[\s\S]*The battery lasts 14 hours\.$/);
 });
+
+test("the stats line counts reranker and decision-model requests beside the main model's", () => {
+  const ctx = load(["lib/llm.js"]);
+  const meter = new (ctx.$("Meter"))();
+  meter.add({ promptTokens: 3539, completionTokens: 448, cachedTokens: 64, genMs: 6450 });
+  meter.addSide("rerank", { model: "qwen3-reranker-0.6b", ms: 1400, tokens: 9000, items: 32 });
+  meter.addSide("rerank", { model: "qwen3-reranker-0.6b", ms: 1400, tokens: 8900, items: 32 });
+  for (const answer of ["no", "no", "yes"]) meter.addSide("decide", { model: "d3-lite", ms: 54, tokens: 106, answer });
+  const s = meter.summary();
+  assert.match(s.text, /448 tokens out · 3,539 in \(64 cached\) · reranked 64 passages in 2\.8 s · 3 decisions, 54 ms avg · /);
+  assert.match(s.title, /Reranker qwen3-reranker-0\.6b: 2 requests, 64 passages, 17,900 tokens, 2\.8 s/);
+  assert.match(s.title, /Decision model d3-lite: 3 answers \(1 yes\), 54 ms average, 318 tokens/);
+});
+
+test("the metered client reports rerank and decide requests to the meter", async () => {
+  const fetch = async (url, init) => {
+    const body = JSON.parse(init.body);
+    if (url.endsWith("/rerank")) return new Response(JSON.stringify({ results: body.documents.map((_, index) => ({ index, relevance_score: 0.5 })), usage: { total_tokens: 40 } }));
+    return new Response(JSON.stringify({ choices: [{ message: { content: '{"answer": "yes"}' } }], usage: { total_tokens: 50 } }));
+  };
+  const ctx = load(["lib/settings.js", "lib/llm.js"], { browser, fetch, Response });
+  const meter = new (ctx.$("Meter"))();
+  const llm = ctx.metered(new (ctx.$("LLM"))({ endpoint: "http://h:1/v1", rerankModel: "rr", decisionModel: "dd" }), meter);
+  await llm.rerank({ query: "q", documents: ["a", "b"] });
+  assert.equal(await llm.decide({ question: "q?", text: "t" }), "yes");
+  assert.deepEqual({ ...meter.side.rerank, ms: 0 }, { model: "rr", calls: 1, ms: 0, tokens: 40, items: 2, yes: 0 });
+  assert.equal(meter.side.decide.model, "dd");
+  assert.equal(meter.side.decide.yes, 1);
+  assert.match(meter.summary().text, /^reranked 2 passages in .* · 1 decision, \d+ ms avg · /);
+});
