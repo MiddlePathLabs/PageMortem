@@ -203,3 +203,33 @@ test("downloads still running at the deadline are cancelled unless they already 
   assert.deepEqual({ ...r }, { saved: 0, failed: 0, notImage: 2, pending: 1 });
   assert.deepEqual(downloads.map((d) => !!d.cancelled), [true, true, false]);
 });
+
+test("with a decision model set, images are checked by it, not by a chat request", async () => {
+  const t = gallery({ replies: [call("save_images", { match: "kittens chasing lasers" }), answer("done")], settings: { decisionModel: "d3-lite" } });
+  const asked = [];
+  t.model.decideImage = async ({ question, image, model }) => {
+    asked.push({ question, model });
+    const [, screen, k] = /crop\/(\d+)\/(\d+)/.exec(image);
+    return SCREENS[screen][k].alt.startsWith("k-") ? 0.97 : 0.02;
+  };
+  await t.run();
+  assert.equal(t.checks.length, 0, "no chat request judged an image");
+  assert.equal(asked.length, 6);
+  assert.equal(asked[0].model, "d3-lite");
+  assert.match(asked[0].question, /Does this image show: kittens chasing lasers\?/);
+  assert.equal(saved(t.web).length, 3);
+});
+
+test("if the decision model can't take images, the run falls back to the vision model once", async () => {
+  const t = gallery({ replies: [call("save_images", { match: "kittens chasing lasers" }), answer("done")], settings: { decisionModel: "decider-0.8b" } });
+  let tries = 0;
+  t.model.decideImage = async () => {
+    tries++;
+    throw new Error("Server returned 400. decider-0.8b takes no images here");
+  };
+  await t.run();
+  assert.ok(tries >= 1 && tries <= 2, "it stops asking after the first failure (two may already be in flight)");
+  assert.equal(t.checks.length, 6);
+  assert.equal(saved(t.web).length, 3);
+  assert.equal(t.ui.steps.filter((s) => /couldn't check images/.test(s.text)).length, 1);
+});
