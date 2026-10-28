@@ -195,3 +195,64 @@ test("reports how many tables it converted", async () => {
   assert.equal(r.tables, 1);
   assert.equal(r.truncated, false);
 });
+
+test("doubtful tables are flagged with their simplified HTML; clean tables are not", async () => {
+  const clean = await markdown(h("body", h("table", h("tr", h("th", "a"), h("th", "b")), h("tr", h("td", "1"), h("td", "2")))));
+  assert.equal(clean.flagged.length, 0);
+  const r = await markdown(
+    h("body",
+      h("table", { class: "wikitable", style: "width:100%" },
+        h("caption", "Data"),
+        h("tr", h("th", { rowspan: "2" }, "Region"), h("th", { colspan: "2" }, "2024")),
+        h("tr", h("th", "Q1"), h("th", "Q2")),
+        h("tr", h("td", { rowspan: "2" }, "EU"), h("td", h("a", { href: "/eu" }, "1 & 2")), h("td", h("span", { hidden: "" }, "x"), "<b>")),
+        h("tr", h("td", "3"), h("td", "4")))),
+  );
+  assert.equal(r.flagged.length, 1);
+  const [t] = r.flagged;
+  assert.deepEqual([...t.reasons], ["merged cells in the data", "a header over several rows"]);
+  assert.ok(r.markdown.includes(t.markdown));
+  assert.equal(
+    t.html,
+    '<table><tr><th rowspan="2">Region</th><th colspan="2">2024</th></tr><tr><th>Q1</th><th>Q2</th></tr>' +
+      '<tr><td rowspan="2">EU</td><td><a href="https://site.example/eu">1 &amp; 2</a></td><td>&lt;b&gt;</td></tr><tr><td>3</td><td>4</td></tr></table>',
+  );
+});
+
+test("ragged rows, missing headers, lists in cells and sparse tables are flagged", async () => {
+  const reasons = async (table) => [...(await markdown(h("body", table))).flagged[0].reasons];
+  assert.deepEqual(await reasons(h("table", h("tr", h("th", "a"), h("th", "b")), h("tr", h("td", "1")))), ["rows have different numbers of cells"]);
+  assert.deepEqual(await reasons(h("table", h("tr", h("td", "a"), h("td", "b")), h("tr", h("td", "1"), h("td", "2")))), ["no header row"]);
+  assert.deepEqual(await reasons(h("table", h("tr", h("th", "a"), h("th", "b")), h("tr", h("td", h("ul", h("li", "x"), h("li", "y"))), h("td", "2")))), ["lists inside cells"]);
+  const sparse = h("table", h("tr", h("th", "a"), h("th", "b"), h("th", "c")), ...[0, 1, 2].map(() => h("tr", h("td", "1"), h("td", ""), h("td", ""))));
+  assert.deepEqual(await reasons(sparse), ["many empty cells"]);
+});
+
+// The model side: lib/chat.js redoes a flagged table and keeps the answer only if it has exactly the table's words.
+const chat = load(["lib/skills.js", "lib/chat.js"]);
+const html = '<table><tr><th rowspan="2">Region</th><th colspan="2">2024</th></tr><tr><th>Q1</th><th>Q2</th></tr><tr><td rowspan="2">EU</td><td><a href="https://site.example/eu">1 &amp; 2</a></td><td><img src="https://site.example/i.png" alt="up"></td></tr><tr><td>3</td><td>4</td></tr></table>';
+const good = "| Region | 2024 / Q1 | 2024 / Q2 |\n| --- | --- | --- |\n| EU | [1 &amp; 2](https://site.example/eu) | ![up](https://site.example/i.png) |\n| EU | 3 | 4 |";
+
+test("a redone table with the same words is accepted, even with merged values repeated", () => {
+  assert.equal(chat.tableProblem(good, html), "");
+});
+
+test("a redone table that adds, drops or misshapes is refused", () => {
+  assert.match(chat.tableProblem(good.replace("Region", "Area"), html), /added words.*“area”/);
+  assert.match(chat.tableProblem(good.replace("| 3 |", "|  |"), html), /left out words.*“3”/);
+  assert.match(chat.tableProblem(good.replace("| EU | 3 | 4 |", "| EU | 3 4 |"), html), /different numbers of cells/);
+  assert.match(chat.tableProblem("Here is the table:\n" + good, html), /wasn't one Markdown table/);
+  assert.equal(chat.tableProblem(good.replace("| Region |", "| Re\\|gion |"), html), "the model added words that aren't in the table (“re”, “gion”)");
+});
+
+test("repairTable sends the reasons and HTML, unwraps a fence and checks the answer", async () => {
+  const sent = [];
+  const llm = { chat: async (req) => (sent.push(req), { content: "```markdown\n" + good + "\n```" }) };
+  const table = { markdown: "| old |", html, reasons: ["merged cells in the data"] };
+  const r = await chat.repairTable({ table, llm, settings: { maxTokens: 1024 } });
+  assert.equal(r.markdown, good);
+  assert.match(sent[0].messages[1].content, /may be wrong \(merged cells in the data\)[\s\S]*<table>/);
+  assert.equal(sent[0].temperature, 0);
+  const bad = await chat.repairTable({ table, llm: { chat: async () => ({ content: good.replace("EU", "Europe") }) }, settings: { maxTokens: 1024 } });
+  assert.match(bad.error, /added words/);
+});

@@ -680,7 +680,7 @@
         const cs = Math.min(Math.max(parseInt(cell.getAttribute("colspan"), 10) || 1, 1), 100);
         const rsRaw = parseInt(cell.getAttribute("rowspan"), 10);
         const rs = rsRaw === 0 ? rows.length - r : Math.min(Math.max(rsRaw || 1, 1), rows.length - r);
-        const value = { text: mdCell(cell, env), head: mdHead(cell) };
+        const value = { text: mdCell(cell, env), head: mdHead(cell), spanned: cs > 1 || rs > 1 };
         for (let dr = 0; dr < rs; dr++) for (let dc = 0; dc < cs; dc++) grid[r + dr][c + dc] = { value, first: dc === 0 };
         c += cs;
       }
@@ -714,15 +714,55 @@
     const caption = mdKids(el).find((c) => c.tagName === "CAPTION");
     const captionText = caption && mdKids(caption).map((c) => mdInline(c, env)).join("").replace(/\s+/g, " ").trim();
     if (captionText) out.push(mdWrap(captionText, "**"));
-    out.push([line(header), line(header.map(() => "---")), ...body.map(line)].join("\n"));
+    const markdown = [line(header), line(header.map(() => "---")), ...body.map(line)].join("\n");
+    out.push(markdown);
+
+    // What the rules above may have gotten wrong. These tables are offered to the model to redo from their HTML.
+    const reasons = [];
+    if (grid.some((r) => r.length < width || r.includes(undefined))) reasons.push("rows have different numbers of cells");
+    if (grid.slice(heads).some((r) => r.some((g) => g?.value.spanned))) reasons.push("merged cells in the data");
+    if (heads > 1) reasons.push("a header over several rows");
+    if (!heads && body.length > 1) reasons.push("no header row");
+    if (body.some((cells) => cells.some((t) => /(^|<br>)(- |\d+\. )/.test(t)))) reasons.push("lists inside cells");
+    const cells = body.flat();
+    if (cells.length >= 6 && cells.filter((t) => !t).length > cells.length * 0.4) reasons.push("many empty cells");
+    if (reasons.length) {
+      const html = mdHtml(el, env);
+      if (html.length <= MD_REPAIR_HTML) env.flagged.push({ markdown, html, reasons });
+    }
     return out;
+  }
+
+  // The HTML a flagged table is sent to the model as: structure, spans, text and links only, no classes or styles.
+  const MD_REPAIR_HTML = 16_000;
+  const MD_HTML_TAGS = new Set(["TABLE", "THEAD", "TBODY", "TFOOT", "TR", "TH", "TD", "UL", "OL", "LI", "P", "BR", "A", "STRONG", "B", "EM", "I", "CODE", "IMG", "SUP", "SUB"]);
+  const htmlEscape = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  function mdHtml(node, env) {
+    if (node.nodeType === Node.TEXT_NODE) return env.range && !env.range.intersectsNode(node) ? "" : htmlEscape((node.nodeValue || "").replace(/\s+/g, " "));
+    if (node.nodeType !== Node.ELEMENT_NODE || mdSkip(node, env) || node.tagName === "CAPTION") return "";
+    const tag = node.tagName;
+    const role = mdRole(node);
+    const inner = mdKids(node).map((c) => mdHtml(c, env)).join("");
+    const tableRole = MD_TABLE_ROLES.has(role) || MD_CELL_ROLES.has(role) || role === "row";
+    if (!MD_HTML_TAGS.has(tag) && !tableRole) return inner;
+    const name = MD_HTML_TAGS.has(tag) ? tag.toLowerCase() : "div";
+    let attrs = "";
+    for (const a of ["colspan", "rowspan", "scope"]) if (node.getAttribute(a)) attrs += ` ${a}="${htmlEscape(node.getAttribute(a))}"`;
+    if (tableRole) attrs += ` role="${role}"`;
+    if (tag === "A" && mdResolve(node.getAttribute("href") || "")) attrs += ` href="${htmlEscape(mdResolve(node.getAttribute("href")))}"`;
+    if (tag === "IMG") {
+      const src = mdResolve(node.currentSrc || node.getAttribute("src") || "", /^https?:$/);
+      if (!src) return "";
+      attrs += ` src="${htmlEscape(src)}" alt="${htmlEscape(clean(node.getAttribute("alt") || ""))}"`;
+    }
+    return tag === "BR" || tag === "IMG" ? `<${name}${attrs}>` : `<${name}${attrs}>${inner}</${name}>`;
   }
 
   /** The selection, or else the page's main content, as Markdown. */
   function pageMarkdown() {
     const sel = getSelection();
     const range = sel?.rangeCount && String(sel).trim() ? sel.getRangeAt(0) : null;
-    const env = { range, tables: 0, len: 0, blocks: new WeakMap() };
+    const env = { range, tables: 0, flagged: [], len: 0, blocks: new WeakMap() };
     let root = range ? range.commonAncestorContainer : readableRoot().root;
     if (root.nodeType !== Node.ELEMENT_NODE) root = root.parentElement;
     let md = mdBlock(root, env).join("\n\n");
@@ -730,7 +770,9 @@
     if (!range && title && !/^# /m.test(md)) md = `# ${mdEscape(title)}\n\n${md}`;
     const truncated = !!env.cut || md.length > MD_CAP;
     if (truncated) md = md.slice(0, MD_CAP);
-    return { ...pageMeta(), markdown: md.trim(), tables: env.tables, selection: !!range, truncated };
+    // A flagged table cut off by the length cap can't be swapped for a repaired one.
+    const flagged = env.flagged.filter((t) => md.includes(t.markdown));
+    return { ...pageMeta(), markdown: md.trim(), tables: env.tables, flagged, selection: !!range, truncated };
   }
 
   // ---------- visual helpers (overlays live in a closed shadow root the page can't style) ----------

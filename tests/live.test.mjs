@@ -110,3 +110,16 @@ test("save_images: the real model's yes/no checks pick the matching images", opt
   console.log(`[images] saved: ${saved.join(", ") || "none"} | answer: ${out.slice(0, 120).replace(/\n/g, " ")}`);
   assert.deepEqual(saved.sort(), ["red1.png", "red2.png"]);
 });
+
+test("redoes a doubtful table with exactly the table's words", opts, async () => {
+  const chat = load(["lib/settings.js", "lib/llm.js", "lib/skills.js", "lib/chat.js"], { fetch, Response });
+  const llm = new (chat.$("LLM"))(base);
+  const html =
+    '<table><tr><th rowspan="2">Planet</th><th colspan="2">Orbit</th><th rowspan="2">Moons</th></tr><tr><th>AU</th><th>Period (yr)</th></tr>' +
+    '<tr><td>Mercury</td><td>0.39</td><td>0.24</td><td>0</td></tr><tr><td rowspan="2">Earth-like</td><td>1.00</td><td>1.00</td><td><p>1</p><ul><li>Moon</li></ul></td></tr>' +
+    '<tr><td>1.52</td><td>1.88</td><td>2</td></tr><tr><td colspan="4">Outer planets not listed</td></tr></table>';
+  const table = { markdown: "| Planet | Orbit / AU | Orbit / Period (yr) | Moons |", html, reasons: ["merged cells in the data", "a header over several rows", "lists inside cells"] };
+  const r = await chat.repairTable({ table, llm, settings: base });
+  assert.equal(r.error, undefined, r.error);
+  assert.match(r.markdown, /^\| Planet \| Orbit \/ AU \| Orbit \/ Period \(yr\) \| Moons \|/);
+});

@@ -23,7 +23,8 @@
     "tabs",
     "scripting",
     "menus",
-    "tabGroups"
+    "tabGroups",
+    "clipboardWrite"
   ],
   "host_permissions": [
     "<all_urls>"

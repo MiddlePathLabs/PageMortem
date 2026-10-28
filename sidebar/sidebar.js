@@ -1121,27 +1121,57 @@ async function runOcr(target = null) {
 }
 
 /**
- * Copy as Markdown: the page's main content, or the selection, converted by the content script. No model is involved,
- * so nothing is shortened or reworded.
+ * Copy as Markdown: the page's main content, or the selection, converted by the content script, so nothing is
+ * shortened or reworded. Tables the converter flags as doubtful are redone by the model from their HTML, one at a
+ * time, and a redone table replaces the converted one only if it has exactly the table's words (lib/chat.js).
  */
 async function runMarkdown() {
   const tab = await activeTab();
   addUser("Copy as Markdown");
   const bot = addBot({ raw: true });
   if (!tab?.id) return bot.error(new Error("No tab to read."));
+  const ctrl = new AbortController();
+  const meter = new Meter();
+  setRunning({ stop: () => ctrl.abort() });
   try {
     const r = await pageCall(tab.id, "markdown");
     if (!r.markdown) return bot.error(new Error("Found no text to convert on this page."));
-    bot.setRaw(r.markdown);
+    let md = r.markdown;
     const parts = [`${r.selection ? "Selection" : "Main content"} · ${r.markdown.length.toLocaleString()} characters`];
     if (r.tables) parts.push(`${r.tables} table${r.tables === 1 ? "" : "s"}`);
     if (r.truncated) parts.push("cut at 2,000,000 characters");
-    // The click's user activation usually outlasts the page call; when it doesn't, the copy button still works.
-    const copied = await navigator.clipboard.writeText(r.markdown).then(() => true, () => false);
+
+    const flagged = r.flagged || [];
+    const todo = flagged.slice(0, TABLE_REPAIR_MAX);
+    const kept = [];
+    let repaired = 0;
+    if (todo.length) bot.note(`Asking the model to redo ${todo.length} table${todo.length === 1 ? "" : "s"} the converter may have gotten wrong.`);
+    for (const [i, table] of todo.entries()) {
+      const label = `Table ${i + 1} (${table.reasons.join(", ")})`;
+      try {
+        const fix = await repairTable({ table, llm: metered(state.llm, meter), settings: state.settings, signal: ctrl.signal });
+        if (fix.markdown) {
+          md = md.replace(table.markdown, () => fix.markdown);
+          repaired++;
+        } else kept.push(`${label}: kept as converted, because ${fix.error}.`);
+      } catch (e) {
+        // Stopped, or the model failed: a failure is rarely about one table, so the rest stay as converted too.
+        kept.push(isAbort(e) ? "Stopped; the remaining tables are kept as converted." : `The model request failed (${e.message}); the remaining tables are kept as converted.`);
+        break;
+      }
+    }
+    if (flagged.length > todo.length) kept.push(`${flagged.length - todo.length} more doubtful tables were kept as converted (at most ${TABLE_REPAIR_MAX} are redone).`);
+    for (const line of kept) bot.note(line);
+    if (repaired) parts.push(`${repaired} redone by the model`);
+
+    bot.setRaw(md);
+    const copied = await navigator.clipboard.writeText(md).then(() => true, () => false);
     parts.push(copied ? "copied" : "use the copy button to copy it");
     bot.note(parts.join(" · "));
   } catch (e) {
     bot.error(e);
+  } finally {
+    bot.stats(meter);
   }
 }
 
