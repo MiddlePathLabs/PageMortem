@@ -135,6 +135,12 @@ main { flex: 1; min-height: 0; overflow-y: auto; padding: 12px; display: flex; f
 
 .msg.user { align-self: flex-end; max-width: 88%; background: var(--accent-soft); border-radius: 12px 12px 3px 12px; padding: 6px 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .msg.bot { overflow-wrap: anywhere; }
+.msg-foot { display: flex; align-items: center; gap: 6px; margin: 4px 0 0 -6px; }
+.msg-foot:empty { display: none; }
+.msg-foot .stats { margin-top: 0; }
+.icon.copy { width: 26px; height: 26px; color: var(--muted); }
+.icon.copy:hover { color: var(--text); }
+.icon.copy svg { width: 15px; height: 15px; stroke-linejoin: round; }
 .thinking { color: var(--muted); }
 .thinking::after { content: "…"; }
 .dimline { color: var(--muted); font-size: 12px; margin-bottom: 4px; }

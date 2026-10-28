@@ -370,6 +370,44 @@ function renderCitedAnswer(body, text, links, sources, final) {
   }
 }
 
+const svgIcon = (d) => {
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("viewBox", "0 0 20 20");
+  svg.setAttribute("aria-hidden", "true");
+  const path = document.createElementNS(ns, "path");
+  path.setAttribute("d", d);
+  svg.append(path);
+  return svg;
+};
+const COPY_ICON = "M7.5 7.5h8v8h-8zM12.5 7.5v-3h-8v8h3";
+const CHECK_ICON = "M4.5 10.5l3.5 3.5 7.5-8";
+
+/** An icon button that puts text on the clipboard, with a check mark for a moment after. */
+function copyButton(text) {
+  const button = el("button", "icon copy");
+  button.title = "Copy";
+  button.setAttribute("aria-label", "Copy reply");
+  button.append(svgIcon(COPY_ICON));
+  let timer = 0;
+  button.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      button.title = "Couldn't copy";
+      return;
+    }
+    button.replaceChildren(svgIcon(CHECK_ICON));
+    button.title = "Copied";
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      button.replaceChildren(svgIcon(COPY_ICON));
+      button.title = "Copy";
+    }, 1500);
+  });
+  return button;
+}
+
 /** replay: draw a stored reply (replayBot) without recording it again. */
 function addBot({ agent = false, replay = false, raw = false } = {}) {
   log.querySelector(".welcome")?.remove();
@@ -382,6 +420,7 @@ function addBot({ agent = false, replay = false, raw = false } = {}) {
     return args;
   };
   const wrap = el("div", "msg bot");
+  const foot = el("div", "msg-foot"); // copy button and stats, under the reply
   let steps = null, list = null, summary = null, count = 0, lastLi = null;
   if (agent) {
     steps = el("details", "steps");
@@ -395,7 +434,7 @@ function addBot({ agent = false, replay = false, raw = false } = {}) {
   const body = el("div", "md");
   const thinking = el("div", "thinking", agent ? "Planning" : "Thinking");
   body.append(thinking);
-  wrap.append(extra, body);
+  wrap.append(extra, body, foot);
   log.append(wrap);
   scrollDown(true);
 
@@ -428,6 +467,16 @@ function addBot({ agent = false, replay = false, raw = false } = {}) {
     if (sources) return renderCitedAnswer(body, md, links, sources, final);
     body.replaceChildren(...markdownNodes(md, { links }));
     if (final && evidenceSources) attachEvidence(body, evidenceSources);
+  };
+  // The reply as Markdown. Citation markup goes: a quote standing in for the sentence's words stays as those words.
+  const copyable = (md) => {
+    if (!sources) return md;
+    const { markdown, citations } = prepareCitations(md, sources, "\u0002");
+    return markdown.replace(/\u0002(\d+)(I?)END/g, (_, n, inline) => (inline ? citations[n - 1].quote : ""));
+  };
+  const showCopy = (text) => {
+    foot.querySelector(".copy")?.remove();
+    if (text) foot.prepend(copyButton(text));
   };
   let frame = 0, pendingText = "", pendingThink = "", stepCount = 0;
   const api = {
@@ -478,6 +527,7 @@ function addBot({ agent = false, replay = false, raw = false } = {}) {
       frame = 0;
       if (pendingThink) drawThink(pendingThink);
       showRaw(text || "(empty reply)");
+      showCopy(text);
       scrollDown();
       if (entry) { delete entry.partial; delete entry.think; }
       if (pendingThink) op("think", pendingThink);
@@ -489,6 +539,7 @@ function addBot({ agent = false, replay = false, raw = false } = {}) {
       frame = 0;
       if (pendingThink) drawThink(pendingThink);
       show(text || "_(empty reply)_", true);
+      showCopy(text && copyable(text).trim());
       scrollDown();
       if (entry) { delete entry.partial; delete entry.think; }
       if (pendingThink) op("think", pendingThink);
@@ -503,10 +554,10 @@ function addBot({ agent = false, replay = false, raw = false } = {}) {
       const s = state.settings.showStats && meter.summary();
       if (!s) return;
       op("stats", s);
-      wrap.querySelector(":scope > .stats")?.remove();
+      foot.querySelector(":scope > .stats")?.remove();
       const line = el("div", "stats", s.text);
       if (s.title) line.title = s.title;
-      wrap.append(line);
+      foot.append(line);
     },
     step(icon, text, { dim = false } = {}) {
       thinking.textContent = "Working";
