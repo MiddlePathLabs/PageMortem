@@ -130,7 +130,7 @@ test("watch gives up at its time limit", async () => {
     decide: () => "yes",
   });
   await run();
-  assert.match(results(agent)[0], /^Stopped watching after 1 min \(\d+ checks\): no sign of “Out of stock” to disappear/);
+  assert.match(results(agent)[0], /^Stopped watching after 1 min \(\d+ checks\) without seeing “Out of stock” to disappear\. The watch ran out/);
   assert.ok(web.tabs.get(1).reloads >= 3 && web.tabs.get(1).reloads <= 4);
 });
 
@@ -147,4 +147,97 @@ test("Stop ends a watch at once", async () => {
   await assert.rejects(p, /Stopped/);
   assert.ok(Date.now() - t < 500);
   assert.equal(model.calls.length, 1);
+});
+
+// ---------- live pages and conditions ----------
+const CLOCK = "https://www.google.com/search?q=utc+time";
+/** A clock page that ticks while it is being observed, without any reload. */
+const clock = () => {
+  let t = 47 * 60 + 52; // 11:47:52 PM
+  const fmt = () => `11:${String(Math.floor(t / 60) % 60).padStart(2, "0")}:${String(t % 60).padStart(2, "0")} PM`;
+  const spec = { title: "utc time", text: `${fmt()}\nCoordinated Universal Time` };
+  spec.onWait = () => {
+    t += 7;
+    spec.text = `${fmt()}\nCoordinated Universal Time`;
+  };
+  return spec;
+};
+/** A decision model that reads the clock and compares it with 11:49:00 PM. */
+const clockJudge = (model) => {
+  model.decisions = [];
+  model.decide = async ({ question, text, model: name }) => {
+    model.decisions.push({ question, text, name });
+    const [, m, s] = /11:(\d\d):(\d\d) PM/.exec(text);
+    return Number(m) * 60 + Number(s) >= 49 * 60 ? "yes" : "no";
+  };
+};
+
+test("a condition is judged by the decision model as a live page changes, with no reload needed", async () => {
+  const { run, web, agent, model } = setup({
+    start: CLOCK,
+    sites: { [CLOCK]: clock() },
+    settings: { decisionModel: "d3-lite" },
+    replies: [call("watch", { condition: "the clock shows 11:49:00 PM or later", every: 600, minutes: 5 }), answer("It's 11:49.")],
+    decide: () => "yes",
+  });
+  clockJudge(model);
+  web.granted.add("notifications");
+  await run();
+  assert.match(results(agent)[0], /^The change happened after .*“the clock shows 11:49:00 PM or later” to be true\. The user has been notified\./);
+  assert.equal(web.tabs.get(1).reloads, undefined, "a live page needs no reload");
+  assert.ok(model.decisions.length > 2);
+  assert.equal(model.decisions[0].name, "d3-lite");
+  assert.match(model.decisions[0].question, /11:49:00 PM or later/);
+  assert.match(web.notifications[0].message, /“the clock shows 11:49:00 PM or later” is true/);
+  assert.equal(model.calls.length, 2, "the main model is not called while watching");
+});
+
+test("literal text on a live page is caught between reloads too", async () => {
+  const { run, web, agent } = setup({
+    start: CLOCK,
+    sites: { [CLOCK]: clock() },
+    replies: [call("watch", { text: "11:48:", every: 600, minutes: 5 }), answer("ok")],
+    decide: () => "yes",
+  });
+  await run();
+  assert.match(results(agent)[0], /^The change happened/);
+  assert.equal(web.tabs.get(1).reloads, undefined);
+});
+
+test("a condition needs a decision model", async () => {
+  const { run, agent, ui } = setup({
+    start: CLOCK,
+    sites: { [CLOCK]: clock() },
+    replies: [call("watch", { condition: "the clock shows 11:49:00 PM or later" }), answer("ok")],
+  });
+  await run();
+  assert.match(results(agent)[0], /^Error: condition needs a decision model/);
+  assert.equal(ui.cards.length, 0);
+});
+
+test("a condition already true needs no watch", async () => {
+  const { run, agent, model, ui } = setup({
+    start: CLOCK,
+    sites: { [CLOCK]: { title: "utc time", text: "11:52:03 PM" } },
+    settings: { decisionModel: "d3-lite" },
+    replies: [call("watch", { condition: "the clock shows 11:49:00 PM or later" }), answer("ok")],
+  });
+  clockJudge(model);
+  await run();
+  assert.match(results(agent)[0], /^No need to watch/);
+  assert.equal(ui.cards.length, 0);
+});
+
+test("a condition that never comes true reloads on schedule and reports running out", async () => {
+  const { run, web, agent, model } = setup({
+    start: ITEM,
+    sites: { [ITEM]: item(1000) },
+    settings: { decisionModel: "d3-lite" },
+    replies: [call("watch", { condition: "the price is below $50", every: 15, minutes: 1 }), answer("ok")],
+    decide: () => "yes",
+  });
+  model.decide = async () => "no";
+  await run();
+  assert.match(results(agent)[0], /^Stopped watching after 1 min .*The watch ran out before the change/);
+  assert.ok(web.tabs.get(1).reloads >= 3 && web.tabs.get(1).reloads <= 4);
 });

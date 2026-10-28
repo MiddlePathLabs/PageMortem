@@ -788,6 +788,41 @@
   }
 
   /**
+   * The page text once it differs from the text whose hash is `since`, or at the time limit, whichever is first; for a
+   * watch whose condition is judged outside the page. Checks at most once a second, since a ticking clock changes the
+   * page constantly.
+   */
+  function watchText({ since = "", timeoutMs = 10000 }) {
+    const hash = (s) => {
+      let h = 0x811c9dc5;
+      for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 0x01000193);
+      return (h >>> 0).toString(36);
+    };
+    const start = performance.now();
+    return new Promise((resolve) => {
+      let dirty = true;
+      const obs = new MutationObserver(() => (dirty = true));
+      obs.observe(document.documentElement, { subtree: true, childList: true, characterData: true, attributes: true });
+      const finish = (r) => {
+        obs.disconnect();
+        resolve(r);
+      };
+      const tick = () => {
+        const waited = Math.round(performance.now() - start);
+        if (dirty) {
+          dirty = false;
+          const text = pageChunks().out.join("");
+          const h = hash(text);
+          if (h !== since) return finish({ changed: true, text, hash: h, waited });
+        }
+        if (waited >= timeoutMs) return finish({ changed: false, waited });
+        setTimeout(tick, 1000);
+      };
+      tick();
+    });
+  }
+
+  /**
    * A table cell's whole row (so "RAM" is outlined together with "16 GB"), unless the row is page layout rather than
    * data: a presentation table, or a row taller than half the screen.
    */
@@ -1179,6 +1214,7 @@
     scroll: scrollPage,
     pressKey,
     waitFor,
+    watchText,
     highlight,
     showPassage,
     rect: rectOf,

@@ -99,11 +99,17 @@ function page(body) {
   };
   for (const e of all) e.doc = document;
   let listener;
+  const observers = [];
   load(["content/content.js"], {
     window: {}, document, Node: { ELEMENT_NODE: 1, TEXT_NODE: 3 }, location: { href: "https://shop.example/cart" },
     scrollY: 0, innerHeight: 800, innerWidth: 1200, getSelection: () => "",
     Event: Ev, KeyboardEvent: Ev, MouseEvent: Ev, PointerEvent: Ev, requestAnimationFrame: (f) => setTimeout(f, 0),
     browser: { runtime: { onMessage: { addListener: (fn) => (listener = fn) } } },
+    performance, MutationObserver: class {
+      constructor(fn) { observers.push((this.fn = fn)); }
+      observe() {}
+      disconnect() { observers.splice(observers.indexOf(this.fn), 1); }
+    },
   });
   const send = async (op, args) => {
     const r = await listener({ pagemortem: true, op, args });
@@ -112,6 +118,7 @@ function page(body) {
   };
   return {
     send,
+    mutate: () => observers.forEach((fn) => fn([])),
     async describe(label) {
       const { text, doc } = await send("readPage", {});
       const id = Number(new RegExp(`\\[(\\d+) \\w+(?:\\(\\w+\\))? "${label}"`).exec(text)[1]);
@@ -340,4 +347,21 @@ test("a label hidden by the layout is shown next to the visible one and can be f
   const found = await p.send("find", { query: "files and versions" });
   assert.equal(found.total, 1);
   assert.equal(found.matches[0].kind, "link");
+});
+
+test("watchText returns the page text when it differs from the last hash, and waits for a change otherwise", async () => {
+  const price = new El("p", {}, ["Price: $54.99"]);
+  const p = page(new El("body", {}, [price]));
+  const first = await p.send("watchText", { since: "", timeoutMs: 0 });
+  assert.equal(first.changed, true);
+  assert.match(first.text, /\$54\.99/);
+  assert.equal((await p.send("watchText", { since: first.hash, timeoutMs: 0 })).changed, false);
+  const later = p.send("watchText", { since: first.hash, timeoutMs: 3000 });
+  setTimeout(() => {
+    price.childNodes[0].nodeValue = "Price: $47.50";
+    p.mutate();
+  }, 50);
+  const r = await later;
+  assert.equal(r.changed, true);
+  assert.match(r.text, /\$47\.50/);
 });

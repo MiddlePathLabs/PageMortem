@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const TEXT = ["endpoint", "apiKey", "model", "visionModel", "rerankModel", "language", "toolMode", "thinking"];
+const TEXT = ["endpoint", "apiKey", "model", "visionModel", "rerankModel", "decisionModel", "language", "toolMode", "thinking"];
 const NUM = ["temperature", "maxTokens", "maxPageChars", "maxSteps", "screenshotWidth", "translateConcurrency"];
 const BOOL = ["showStats", "stayOnSite", "confirmAll", "closeAgentTabs"];
 
@@ -143,6 +143,25 @@ async function checkRerank(llm, s) {
     throw new Error(`Rerank probe did not pass for ${s.rerankModel}: the matching passage did not score highest. Check that the server serves it on /rerank. This does not prove reranking is unsupported.`);
   }
   return `Rerank probe passed for ${s.rerankModel}: ranked the matching passage first of three (score ${scores[0].toFixed(2)}). One small test is not a guarantee for every page.`;
+}
+
+async function checkDecision(llm, s) {
+  if (!s.decisionModel) throw new Error("Set a decision model first. Without one, Agent watches check only for exact text.");
+  const cases = [
+    ["The clock shows 11:49:00 PM or later.", "11:47:52 PM\nCoordinated Universal Time", "no"],
+    ["The clock shows 11:49:00 PM or later.", "11:52:03 PM\nCoordinated Universal Time", "yes"],
+    ["The price is below $50.", "Acme Kettle\nPrice: $54.99\nIn stock", "no"],
+    ["The item is back in stock.", "Acme Kettle\n$54.99\nOnly 3 left - order soon\nAdd to cart", "yes"],
+  ];
+  let right = 0;
+  for (const [question, text, expected] of cases) {
+    const answer = await llm.decide({ model: s.decisionModel, question: `Does this web page show that the following is true now? ${question}`, text });
+    if (answer === expected) right++;
+  }
+  if (right < cases.length) {
+    throw new Error(`Decision probe did not pass for ${s.decisionModel}: ${right} of ${cases.length} answers were right. A watch condition could fire early or never; try another model. This does not prove it can't work.`);
+  }
+  return `Decision probe passed for ${s.decisionModel}: answered ${cases.length} of ${cases.length} yes/no questions right. Small tests don't guarantee every condition.`;
 }
 
 function visionProbeImage() {
@@ -482,6 +501,7 @@ async function init() {
   $("checkTools").addEventListener("click", () => runCheck("checkTools", "toolsResult", checkTools));
   $("checkVision").addEventListener("click", () => runCheck("checkVision", "visionResult", checkVision));
   $("checkRerank").addEventListener("click", () => runCheck("checkRerank", "rerankResult", checkRerank));
+  $("checkDecision").addEventListener("click", () => runCheck("checkDecision", "decisionResult", checkDecision));
   $("checkThinking").addEventListener("click", () => runCheck("checkThinking", "thinkingResult", checkThinking));
   $("save").addEventListener("click", async () => {
     $("save").disabled = true;

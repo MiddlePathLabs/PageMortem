@@ -42,6 +42,10 @@
         <input id="rerankModel" list="models" spellcheck="false" aria-describedby="rerankHint">
       </label>
       <p class="hint" id="rerankHint">A reranker such as Qwen3-Reranker, served on <code>/rerank</code>. Ask then sends the parts of a long page most relevant to the question instead of cutting it at the end, and Sources finds reworded points without asking the main model.</p>
+      <label>Decision model <span class="opt">(blank = none)</span>
+        <input id="decisionModel" list="models" spellcheck="false" aria-describedby="decisionHint">
+      </label>
+      <p class="hint" id="decisionHint">A small yes/no classifier, or any model with structured output. Agent watches can then wait for a condition such as “the price is below $50” instead of exact text; it is checked each time the page changes, without the main model.</p>
       <label>Tool calling
         <select id="toolMode" aria-describedby="toolHint">
           <option value="native">Native (OpenAI tool calls)</option>
@@ -67,6 +71,10 @@
         <div class="probe">
           <button id="checkRerank" type="button" aria-describedby="rerankResult">Check Rerank</button>
           <span id="rerankResult" class="result" role="status" aria-live="polite" aria-atomic="true">Not checked. Ranks three short passages against a question.</span>
+        </div>
+        <div class="probe">
+          <button id="checkDecision" type="button" aria-describedby="decisionResult">Check Decision</button>
+          <span id="decisionResult" class="result" role="status" aria-live="polite" aria-atomic="true">Not checked. Asks four yes/no questions about short texts.</span>
         </div>
       </fieldset>
       <label>Default translation language

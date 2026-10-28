@@ -207,6 +207,14 @@ export class Web {
         const met = (!args.text || has(args.text)) && (!args.gone || !has(args.gone));
         return { met, waited: met ? 1200 : args.timeoutMs };
       }
+      case "watchText": {
+        // The page text as the agent's condition check sees it; the text itself serves as its hash.
+        this.log.push(["watchText", tab.url, args]);
+        d.spec.onWait?.(tab, this);
+        if (tab.doc !== d) throw new Error("Could not establish connection. Receiving end does not exist.");
+        const text = tab.doc.spec.text || "";
+        return text === args.since ? { changed: false, waited: args.timeoutMs } : { changed: true, text, hash: text, waited: 0 };
+      }
       case "select":
         this.log.push(["select", tab.url, args]);
         return { ok: true, selected: args.value };
