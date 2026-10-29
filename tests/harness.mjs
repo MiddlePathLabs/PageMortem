@@ -168,6 +168,13 @@ export class Web {
       case "click": {
         if (el.hidden) return fail(`[${args.id}] is hidden. Read the page again.`);
         this.log.push(["click", tab.url, args]);
+        // `file` is what the page would download; caught while capturing, else it lands loose in `downloads`.
+        const file = d.spec.elements[args.id].file;
+        if (file) {
+          if (tab.capture) tab.capture.push(structuredClone(file));
+          else this.downloads.push({ id: this.downloads.length + 1, url: "blob:page", filename: file.name, state: "complete", byPage: true });
+          return { ok: true };
+        }
         const behaviour = d.spec.elements[args.id].onClick;
         if (behaviour) behaviour(tab, this);
         else if (el.href) this.navigate(tab, el.href);
@@ -238,6 +245,11 @@ export class Web {
         return { rect: { x: 0, y: 0, w: 10, h: 10 }, viewport: { w: 1280, h: 800 } };
       case "clearMarks":
         return { ok: true };
+      case "captureDownloads":
+        tab.capture = args.on ? [] : null;
+        return args.on ? { supported: true } : { ok: true };
+      case "takeDownloads":
+        return { files: tab.capture ? tab.capture.splice(0) : [] };
       default:
         return fail(`unknown op ${op}`);
     }

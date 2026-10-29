@@ -13,6 +13,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -36,9 +37,11 @@ class Fixture:
         fixture = self
 
         class Handler(BaseHTTPRequestHandler):
-            def respond(self, body, status=200, mime="text/html"):
+            def respond(self, body, status=200, mime="text/html", csp=""):
                 self.send_response(status)
                 self.send_header("Content-Type", mime)
+                if csp:
+                    self.send_header("Content-Security-Policy", csp)
                 self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
                 self.wfile.write(body)
@@ -55,6 +58,8 @@ class Fixture:
                   <a id="js" href="javascript:window.jsRan=true">Script link</a>
                   <a id="data" href="data:text/html,unsafe">Data link</a>
                   <a id="redirect" href="/redirect">Redirect link</a>
+                  <button id="blobdl" onclick="setTimeout(()=>{{const u=window.URL.createObjectURL(new Blob(['{{&quot;a&quot;:1}}'],{{type:'application/json'}}));const a=document.createElement('a');a.href=u;a.download='wf.json';a.click();setTimeout(()=>window.URL.revokeObjectURL(u),1000)}},50)">Download workflow</button>
+                  <a id="linkdl" href="data:application/json,%7B%7D" download="plain.json">Download plain</a>
                   <button id="mutate" onpointerdown="window.pointerRan=true;this.textContent='Changed'">Show more</button>
                   <form action="/submit" method="get"><input name="q" value="public">
                     <button id="cross" formaction="{fixture.cross_action}" formmethod="post">Submit elsewhere</button>
@@ -66,7 +71,7 @@ class Fixture:
                     </form>
                   </article>
                 </body></html>'''.encode()
-                self.respond(body)
+                self.respond(body, csp="default-src 'self' 'unsafe-inline'" if self.path == "/csp" else "")
 
             def do_POST(self):
                 body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
@@ -105,11 +110,11 @@ class FirefoxIntegration(unittest.TestCase):
         origins = [cls.first.origin + "/v1"]
         if HALOGEN_ENDPOINT:
             origins.append(HALOGEN_ENDPOINT)
-        subprocess.run(["python3", str(work / "configure.py"), *origins], check=True, capture_output=True)
+        subprocess.run([sys.executable, str(work / "configure.py"), *origins], check=True, capture_output=True)
         options = Options()
         options.binary_location = os.environ.get("FIREFOX_BINARY", "/Applications/Firefox Developer Edition.app/Contents/MacOS/firefox")
         options.add_argument("-headless")
-        service = Service(os.environ.get("GECKODRIVER", "geckodriver"), env={**os.environ, "MOZ_REMOTE_ALLOW_SYSTEM_ACCESS": "1"})
+        service = Service(os.environ.get("GECKODRIVER") or None, env={**os.environ, "MOZ_REMOTE_ALLOW_SYSTEM_ACCESS": "1"})
         cls.driver = webdriver.Firefox(options=options, service=service)
         cls.driver.install_addon(str(work / "pagemortem.xpi"), temporary=True)
         cls.driver.set_context("chrome")
@@ -291,6 +296,27 @@ class FirefoxIntegration(unittest.TestCase):
                 self.assertIn("of 4", state["text"], state)
             else:
                 self.assertIn("ok", state["className"], state)
+
+    def test_download_capture_catches_blob_and_link_downloads(self):
+        # Under a CSP like real download sites send, where fetching the blob: address itself is blocked.
+        self.driver.switch_to.window(self.fixture_tab)
+        self.driver.get(self.first.origin + "/csp")
+        self.ext("await browser.scripting.executeScript({target:{tabId:arguments[0]},files:['/content/content.js']}); return true", self.tab_id)
+        self.assertEqual(self.page("captureDownloads", {"on": True}), {"supported": True})
+        for label in ("Download workflow", "Download plain"):
+            el, doc = self.id_for(label)
+            self.page("click", {"id": el, "doc": doc})
+        got = self.ext(
+            "const r=await browser.tabs.sendMessage(arguments[0],{pagemortem:true,op:'takeDownloads',args:{wait:3000}});"
+            "return r.error ? r : r.files.map(f=>({name:f.name,released:!!f.released,href:f.href||'',size:f.bytes?f.bytes.byteLength:-1,"
+            "text:f.bytes?new TextDecoder().decode(f.bytes):''}))",
+            self.tab_id,
+        )
+        self.page("captureDownloads", {"on": False})
+        self.assertEqual(sorted(f["name"] for f in got), ["plain.json", "wf.json"], got)
+        for f in got:
+            self.assertFalse(f["released"], got)
+        self.assertEqual(next(f for f in got if f["name"] == "wf.json")["text"], '{"a":1}')
 
     def test_z_permission_revocation_stops_new_injection(self):
         removed = self.ext("return browser.permissions.remove({origins:['<all_urls>']})")

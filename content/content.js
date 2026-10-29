@@ -1,5 +1,6 @@
 // PageMortem content script. Injected on demand into the tab being read or operated.
-// It never makes network requests; it only reads the DOM and performs the actions it is asked to.
+// It never makes network requests; it only reads the DOM (and, while capturing downloads, blob:/data: files the page made)
+// and performs the actions it is asked to.
 (() => {
   "use strict";
   if (window.__pagemortemReady) return;
@@ -1664,6 +1665,98 @@
     return { restored: n };
   }
 
+  // ---------- download capture (click_each) ----------
+  // While the agent clicks a list of Download buttons, a file the page hands the browser through a link (a download
+  // name, or a blob:/data: address) is caught here instead, so the extension can save it into its own folder. Contents
+  // are read without any request: a blob from the object the page made it from (fetching a blob: address is blocked by
+  // many sites' CSP), a data: address by decoding it. A web address is passed back as it is. A file that can't be read
+  // is let through, and the browser downloads it as it would have.
+  const MAX_CAPTURE = 200 * 1024 * 1024;
+  let capture = null; // { jobs: [], blobs: Map<blob: address, Blob> } while capturing
+  let pageClick = null; // the page's own HTMLAnchorElement.prototype.click, once hooked
+  const letThrough = new WeakSet(); // links whose file couldn't be read, clicked again for the browser to download
+
+  const catchable = (a) => a.hasAttribute("download") || /^(blob|data):/i.test(a.href || "");
+  const readBlob = (blob) =>
+    new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(r.result);
+      r.onerror = () => reject(r.error);
+      r.readAsArrayBuffer(blob);
+    });
+  function dataBytes(href) {
+    const m = /^data:([^,]*?)(;base64)?,(.*)$/is.exec(href);
+    if (!m) throw new Error("bad data address");
+    const raw = m[2] ? atob(decodeURIComponent(m[3])) : unescape(m[3].replace(/%(?![0-9a-f]{2})/gi, "%25"));
+    const bytes = Uint8Array.from(raw, (c) => c.charCodeAt(0) & 255);
+    return { type: m[1].split(";")[0], bytes: bytes.buffer };
+  }
+  function take(a, release) {
+    const href = a.href;
+    const name = a.getAttribute("download") || "";
+    const blob = capture.blobs.get(href);
+    capture.jobs.push((async () => {
+      if (/^https?:/i.test(href)) return { href, name };
+      if (/^data:/i.test(href)) return { name, ...dataBytes(href) };
+      if (!blob || blob.size > MAX_CAPTURE) throw new Error("unreadable");
+      return { name, type: blob.type, bytes: await readBlob(blob) };
+    })().catch(() => {
+      release();
+      return { name, released: true };
+    }));
+  }
+
+  function hookDownloads() {
+    if (pageClick || typeof exportFunction !== "function") return !!pageClick; // Firefox content scripts only
+    const proto = window.wrappedJSObject.HTMLAnchorElement.prototype;
+    pageClick = proto.click;
+    // Remember what each blob: address the page makes while capturing holds, to read it without a request.
+    const pageURL = window.wrappedJSObject.URL;
+    const makeURL = pageURL.createObjectURL;
+    pageURL.createObjectURL = exportFunction(function (obj) {
+      const url = makeURL.call(pageURL, obj);
+      if (capture && typeof obj?.size === "number") capture.blobs.set(url, obj); // a Blob or File, not a MediaSource
+      return url;
+    }, window);
+    // Sites usually build a detached <a download>, call .click() on it and drop it; no event reaches the document.
+    proto.click = exportFunction(function () {
+      if (capture && catchable(this)) return take(this, () => pageClick.call(this));
+      return pageClick.call(this);
+    }, window);
+    // A real link in the page, clicked by the agent or by page script.
+    window.addEventListener("click", (e) => {
+      const a = e.target instanceof Element ? e.target.closest("a[href]") : null;
+      if (a && letThrough.delete(a)) return;
+      if (!capture || !a || !catchable(a) || e.defaultPrevented) return;
+      e.preventDefault();
+      take(a, () => {
+        letThrough.add(a);
+        a.click();
+      });
+    }, true);
+    return true;
+  }
+
+  function captureDownloads({ on }) {
+    if (!on) {
+      capture = null;
+      return { ok: true };
+    }
+    if (!hookDownloads()) return { supported: false };
+    capture = { jobs: [], blobs: new Map() };
+    return { supported: true };
+  }
+
+  /** The files caught so far, waiting up to `wait` ms for the first one; each is handed over once. */
+  async function takeDownloads({ wait = 0 }) {
+    if (!capture) return { files: [] };
+    const until = Date.now() + wait;
+    while (!capture.jobs.length && Date.now() < until) await new Promise((r) => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, 300)); // a click can start more than one file
+    const jobs = capture.jobs.splice(0);
+    return { files: await Promise.all(jobs) };
+  }
+
   // ---------- message router ----------
   const handlers = {
     ping: () => ({ ok: true }),
@@ -1712,6 +1805,8 @@
     collectSegments,
     applySegments,
     restoreOriginal,
+    captureDownloads,
+    takeDownloads,
     hasTranslation: () => ({ translated: originals.size > 0 }),
   };
 
