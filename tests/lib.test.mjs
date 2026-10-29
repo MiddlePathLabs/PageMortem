@@ -404,3 +404,32 @@ test("the repository manifest allows no model server until configure.py builds o
   assert.deepEqual(plain(lockedOrigins()), []);
   assert.match(lockProblem("http://192.168.1.100:8080/v1"), /only allows nothing/);
 });
+
+test("a right-clicked image's full-size file is fetched only from the page's site or the displayed image's", async () => {
+  const ctx = load(["lib/tabs.js", "lib/chat.js"]);
+  const fetched = [];
+  const page = (sources, finalUrl) => async (tabId, op, args) => {
+    if (op === "imageSources") return sources;
+    fetched.push(args.url);
+    return { url: "data:image/jpeg;base64,AA", width: 4000, height: 3000, finalUrl: finalUrl || args.url };
+  };
+  const target = { targetElementId: 7, srcUrl: "https://cdn.gallery.example/t/1.jpg" };
+  const pageUrl = "https://gallery.example/album";
+
+  ctx.pageCall = page({ src: "https://img.gallery.example/full/1.jpg", shown: target.srcUrl });
+  assert.equal((await ctx.fullImage(1, target, { pageUrl })).width, 4000);
+
+  ctx.pageCall = page({ src: "https://pbs.cdn.example/full/1.jpg", shown: "https://pbs.cdn.example/thumb/1.jpg" });
+  assert.equal((await ctx.fullImage(1, target, { pageUrl })).width, 4000, "same site as the displayed image");
+
+  ctx.pageCall = page({ src: "https://elsewhere.example/1.jpg", shown: target.srcUrl });
+  assert.match((await ctx.fullImage(1, target, { pageUrl })).reason, /another site/);
+
+  ctx.pageCall = page({ src: "data:image/png;base64,AA", shown: target.srcUrl });
+  assert.match((await ctx.fullImage(1, target, { pageUrl })).reason, /no web address/);
+
+  ctx.pageCall = page({ src: "https://gallery.example/full/1.jpg", shown: target.srcUrl }, "https://tracker.example/1.jpg");
+  assert.match((await ctx.fullImage(1, target, { pageUrl })).reason, /redirected/);
+
+  assert.deepEqual(fetched, ["https://img.gallery.example/full/1.jpg", "https://pbs.cdn.example/full/1.jpg", "https://gallery.example/full/1.jpg"]);
+});

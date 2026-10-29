@@ -85,7 +85,7 @@ class Ev {
 }
 const stub = () => ({ style: {}, isConnected: true, setAttribute() {}, appendChild() {}, remove() {}, attachShadow: stub });
 
-function page(body, { ld = [] } = {}) {
+function page(body, { ld = [], extra = {} } = {}) {
   const all = [];
   const index = (e) => (all.push(e), e.childNodes?.forEach((c) => c.nodeType === 1 && index(c)));
   index(body);
@@ -110,6 +110,7 @@ function page(body, { ld = [] } = {}) {
       observe() {}
       disconnect() { observers.splice(observers.indexOf(this.fn), 1); }
     },
+    ...extra,
   });
   const send = async (op, args) => {
     const r = await listener({ pagemortem: true, op, args });
@@ -401,4 +402,25 @@ test("pages without product JSON-LD read as before, and huge variant lists are c
   assert.match(text, /Paint · 250 variants/);
   assert.match(text, /- Shade 199\n- …\(50 more variants not shown\)/);
   assert.doesNotMatch(text, /Shade 200/);
+});
+
+test("fetching a full-size image refuses non-images, oversized files and slow servers", async () => {
+  const replies = {
+    "https://shop.example/page.html": () => new Response("<html>", { headers: { "content-type": "text/html" } }),
+    "https://shop.example/logo.svg": () => new Response("<svg/>", { headers: { "content-type": "image/svg+xml" } }),
+    "https://shop.example/huge.jpg": () => new Response(new Uint8Array(2000), { headers: { "content-type": "image/jpeg" } }),
+    "https://shop.example/gone.jpg": () => new Response("", { status: 404 }),
+  };
+  const fetch = async (url, { signal }) => {
+    if (url.endsWith("slow.jpg")) return new Promise((_, reject) => signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))));
+    return replies[url]();
+  };
+  const p = page(new El("body"), { extra: { fetch } });
+  const get = (url, args = {}) => p.send("fetchImage", { url, maxBytes: 1000, timeout: 50, ...args });
+  await assert.rejects(get("https://shop.example/page.html"), /isn't an image file/);
+  await assert.rejects(get("https://shop.example/logo.svg"), /isn't an image file/);
+  await assert.rejects(get("https://shop.example/huge.jpg"), /too large/);
+  await assert.rejects(get("https://shop.example/gone.jpg"), /answered 404/);
+  await assert.rejects(get("https://shop.example/slow.jpg"), /took too long/);
+  await assert.rejects(get("data:image/png;base64,AA"), /isn't a web address/);
 });

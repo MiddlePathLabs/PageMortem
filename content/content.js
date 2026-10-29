@@ -928,11 +928,8 @@
     return { images, viewport: { w: innerWidth, h: innerHeight }, atBottom, doc: DOC };
   }
 
-  /**
-   * The image the user right-clicked, for Extract text: found by the menu's target id, else by address. Scrolled into
-   * view first; clipped says part of it still lies outside the viewport (an image taller than the window).
-   */
-  async function imageRect({ targetElementId, srcUrl } = {}) {
+  /** The image a menu click was on: by the menu's element id, else by its address. */
+  function findImage({ targetElementId, srcUrl } = {}) {
     let el = null;
     if (targetElementId != null) {
       try {
@@ -945,6 +942,71 @@
       el = [...document.images].find((img) => img.currentSrc === srcUrl || absUrl(img.getAttribute("src") || "") === srcUrl) || null;
     }
     if (!el) throw new Error("Couldn't find that image on the page. Images inside frames aren't supported.");
+    return el;
+  }
+
+  /** The clicked image's best address (imageSource) and what is displayed, so the sidebar can decide which to trust. */
+  function imageSources(args = {}) {
+    const el = findImage(args);
+    const img = el.tagName === "PICTURE" ? el.querySelector("img") : el;
+    const shown = img?.tagName === "IMG" ? absUrl(img.currentSrc || img.getAttribute("src") || "") : "";
+    return { src: imageSource(el), shown };
+  }
+
+  /**
+   * Downloads an image file the way the page would (its cookies, only its origin as Referer) and returns it as a JPEG
+   * data URL no larger than maxSide. Refuses anything that isn't a raster image or is over maxBytes.
+   */
+  async function fetchImage({ url, maxBytes = 15e6, timeout = 4000, maxSide = 2048 } = {}) {
+    if (!/^https?:/i.test(url || "")) throw new Error("the full-size address isn't a web address");
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeout);
+    try {
+      const res = await fetch(url, { credentials: "include", referrerPolicy: "origin", signal: ctrl.signal });
+      if (!res.ok) throw new Error(`the site answered ${res.status}`);
+      const type = (res.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+      if (!type.startsWith("image/") || type === "image/svg+xml") throw new Error("the address isn't an image file");
+      if (Number(res.headers.get("content-length")) > maxBytes) throw new Error("the file is too large");
+      // Counted while reading: a server without Content-Length could otherwise send any amount.
+      const chunks = [];
+      let size = 0;
+      const reader = res.body.getReader();
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        size += value.length;
+        if (size > maxBytes) {
+          reader.cancel().catch(() => {});
+          throw new Error("the file is too large");
+        }
+        chunks.push(value);
+      }
+      const bmp = await createImageBitmap(new Blob(chunks, { type })).catch(() => {
+        throw new Error("the file isn't an image Firefox can read");
+      });
+      const scale = Math.min(1, maxSide / Math.max(bmp.width, bmp.height));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(bmp.width * scale));
+      canvas.height = Math.max(1, Math.round(bmp.height * scale));
+      const ctx = canvas.getContext("2d");
+      ctx.fillStyle = "#fff"; // transparent areas would otherwise turn black in the JPEG
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(bmp, 0, 0, canvas.width, canvas.height);
+      return { url: canvas.toDataURL("image/jpeg", 0.92), width: bmp.width, height: bmp.height, finalUrl: res.url || url };
+    } catch (e) {
+      if (ctrl.signal.aborted) throw new Error("it took too long");
+      throw e;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
+   * The image the user right-clicked, for Extract text: found by the menu's target id, else by address. Scrolled into
+   * view first; clipped says part of it still lies outside the viewport (an image taller than the window).
+   */
+  async function imageRect(args = {}) {
+    const el = findImage(args);
     let r = el.getBoundingClientRect();
     if (r.top < 0 || r.bottom > innerHeight || r.left < 0 || r.right > innerWidth) {
       el.scrollIntoView({ block: r.height > innerHeight ? "start" : "center", inline: "nearest", behavior: "instant" });
@@ -1801,6 +1863,8 @@
     markImages,
     listImages,
     imageRect,
+    imageSources,
+    fetchImage,
     clearMarks: () => (clearOverlay(), { ok: true }),
     collectSegments,
     applySegments,

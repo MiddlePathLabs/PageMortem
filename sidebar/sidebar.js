@@ -898,6 +898,7 @@ function setRunning(r) {
   send.classList.toggle("stop", !!r);
   send.setAttribute("aria-label", r ? "Stop" : "Send");
   for (const id of ["summarize", "translate", "ocr", "markdown", "restore", "groupTabs", "newChat"]) $(id).disabled = !!r;
+  for (const button of $("skillButtons").children) button.disabled = !!r;
   for (const button of document.querySelectorAll(".modes button")) button.disabled = !!r;
   renderContext();
 }
@@ -1000,7 +1001,7 @@ async function runAsk(question) {
   }
 }
 
-async function runAgent(task, skill = null) {
+async function runAgent(task, skill = null, target = null) {
   const tabs = await contextTabs(state.windowId);
   const active = await activeTab();
   const selection = await pageCall(active.id, "selection").then((r) => r.text).catch(() => "");
@@ -1020,7 +1021,15 @@ async function runAgent(task, skill = null) {
   let result = "";
   try {
     const earlier = earlierTurnsBlock(followups);
-    const answer = await agent.run(task, { tabId: active.id, otherTabs: tabs.filter((t) => t.id !== active.id), selection, skill, earlier });
+    let image = null;
+    if (target) {
+      const url = await clickedImage(target, bot, agent.abort.signal);
+      if (url) {
+        bot.image(url);
+        image = { url, src: target.srcUrl };
+      } else bot.note("Running without the image.");
+    }
+    const answer = await agent.run(task, { tabId: active.id, otherTabs: tabs.filter((t) => t.id !== active.id), selection, skill, earlier, image });
     bot.citations(agent.citations);
     bot.set(answer);
     result = answer;
@@ -1041,7 +1050,7 @@ async function runAgent(task, skill = null) {
  * A prompt skill answers in one request. It does not enter the agent loop or inherit Ask's system prompt, but it sees
  * its own earlier answers in this conversation, so a follow-up such as "again" or "shorter" works.
  */
-async function runPromptSkill(skill, task) {
+async function runPromptSkill(skill, task, target = null) {
   const bot = addBot({ raw: skill.output === "raw" });
   const ctrl = new AbortController();
   const meter = new Meter();
@@ -1054,12 +1063,16 @@ async function runPromptSkill(skill, task) {
     let pageText = "";
     let selection = "";
     if (skill.needs === "image") {
-      const tab = await activeTab();
-      if (!tab?.id) throw new Error("No active tab to look at.");
-      const shot = await pageShot(tab.id, { maxWidth: state.settings.screenshotWidth, signal: ctrl.signal });
-      image = shot.url;
-      bot.image(shot.url);
-      bot.note(shot.cropped ? "Showing the model the main image on the page." : "Showing the model a screenshot of the page.");
+      image = target ? await clickedImage(target, bot, ctrl.signal) : null;
+      if (target && !image) bot.note("Using the main image instead.");
+      if (!image) {
+        const tab = await activeTab();
+        if (!tab?.id) throw new Error("No active tab to look at.");
+        const shot = await pageShot(tab.id, { maxWidth: state.settings.screenshotWidth, signal: ctrl.signal });
+        image = shot.url;
+        bot.note(shot.cropped ? "Showing the model the main image on the page." : "Showing the model a screenshot of the page.");
+      }
+      bot.image(image);
       if (state.settings.visionModel && state.settings.visionModel !== state.settings.model) bot.note(`Asking ${state.settings.visionModel}.`);
     } else if (skill.needs === "page") {
       const tab = await activeTab();
@@ -1318,6 +1331,41 @@ async function runRestore() {
   refreshContext();
 }
 
+/**
+ * The right-clicked image for a skill: its full-size file when that comes quickly, else the image cropped from the
+ * screen. Null when neither works; the caller says what it does instead.
+ */
+async function clickedImage(target, bot, signal) {
+  if (target.frameId) {
+    bot.note("That image is inside a frame, which PageMortem can't reach.");
+    return null;
+  }
+  const tab = await browser.tabs.get(target.tabId).catch(() => null);
+  if (!tab) return null;
+  let reason;
+  try {
+    const full = await fullImage(tab.id, target, { pageUrl: tab.url, signal });
+    if (full.url) {
+      const scaled = Math.max(full.width, full.height) > FULL_IMAGE.maxSide ? `, scaled to ${FULL_IMAGE.maxSide} px` : "";
+      bot.note(`Using the full-size file (${full.width}×${full.height}${scaled}).`);
+      return full.url;
+    }
+    reason = full.reason;
+  } catch (e) {
+    if (isAbort(e)) throw e;
+    reason = e.message;
+  }
+  try {
+    const shot = await imageShot(tab.id, { targetElementId: target.targetElementId, srcUrl: target.srcUrl, quality: 0.92, signal });
+    bot.note(`Couldn't get the full-size file (${reason}); using the image as shown on screen${shot.clipped ? ", only the part in view" : ""}.`);
+    return shot.url;
+  } catch (e) {
+    if (isAbort(e)) throw e;
+    bot.note(e.message);
+    return null;
+  }
+}
+
 function composerError(text) {
   const line = $("composerError");
   line.hidden = !text;
@@ -1345,6 +1393,52 @@ function send() {
     if (route.skill.kind === "agent") return runAgent(route.task, route.skill);
     return runPromptSkill(route.skill, route.task);
   });
+}
+
+/**
+ * A skill button or right-click entry. It runs once and does not become the active skill. An agent skill switches to
+ * Agent: the click already says what to do, so refusing it in Ask would only add a step.
+ */
+function runSkillNow(name, task = "", target = null) {
+  if (state.running || state.reserved) return;
+  const skill = state.skills.find((s) => s.name === name);
+  if (!skill) return composerError(`No skill named @${name}.`);
+  if (skill.kind === "agent" && state.mode !== "agent") setMode("agent");
+  composerError("");
+  hideSkillMenu();
+  addUser(`@${skill.name}${target ? " on this image" : ""}${task ? ` ${task}` : ""}`);
+  task ||= "Follow the skill instructions.";
+  guard(() => (skill.kind === "agent" ? runAgent(task, skill, target) : runPromptSkill(skill, task, target)));
+}
+
+/** Pinned skills as buttons after the built-in ones. Text in the message box becomes the task. */
+function renderSkillButtons() {
+  $("skillButtons").replaceChildren(...pinnedSkills(state.skills).map((skill) => {
+    const agent = skill.kind === "agent";
+    const button = el("button", agent ? "chip agent" : "chip", `@${skill.name}`);
+    button.type = "button";
+    button.title = [skill.description, agent ? "Agent skill: switches to Agent and can act on pages." : "", "Text in the message box becomes the task."]
+      .filter(Boolean).join("\n");
+    button.disabled = !!state.running;
+    button.addEventListener("click", () => {
+      const input = $("input");
+      const task = input.value.trim();
+      if (state.running || state.reserved) return;
+      input.value = "";
+      input.style.height = "auto";
+      runSkillNow(skill.name, task);
+    });
+    return button;
+  }));
+}
+
+/** Leaves out the built-in buttons Settings hides. Summarize and Translate hide with their pickers. */
+function renderQuickButtons() {
+  const hidden = new Set(state.settings.hiddenButtons || []);
+  for (const { id } of QUICK_BUTTONS) {
+    const button = $(id);
+    (button.closest(".split") || button).hidden = hidden.has(id);
+  }
 }
 
 /** The skill that stays active after @name, when it still exists and works in this mode. */
@@ -1683,6 +1777,10 @@ async function consumePending() {
   else if (c.kind === "ask") {
     setMode("ask");
     $("input").focus();
+  } else if (c.kind === "skill") {
+    // Selected text is the task, unless the skill reads the page, which includes the selection already.
+    const skill = state.skills.find((s) => s.name === c.skill);
+    runSkillNow(c.skill, skill?.needs === "page" || skill?.kind === "agent" ? "" : c.selection, c.image);
   }
 }
 
@@ -1691,6 +1789,8 @@ async function applySettings() {
   state.llm = new LLM(state.settings);
   state.skills = await loadSkills().catch(() => state.skills);
   renderSkillChip();
+  renderSkillButtons();
+  renderQuickButtons();
   checkSetup();
 }
 
@@ -1852,7 +1952,8 @@ async function init() {
       if (next) {
         state.skills = next;
         renderSkillChip();
-      } else loadSkills().then((list) => { state.skills = list; renderSkillChip(); }).catch(() => {});
+        renderSkillButtons();
+      } else loadSkills().then((list) => { state.skills = list; renderSkillChip(); renderSkillButtons(); }).catch(() => {});
     }
     if (!changes.settings) return;
     // A run keeps the settings it started with; changes made meanwhile apply when it ends.

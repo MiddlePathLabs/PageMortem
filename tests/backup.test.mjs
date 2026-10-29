@@ -65,3 +65,15 @@ test("a bad file is refused, and bad values or skills inside a backup are left o
   assert.deepEqual(plain(parsed.skills.map((s) => s.name)), ["notes"]);
   assert.equal(parsed.skipped.length, 2);
 });
+
+test("hidden sidebar buttons and button skills survive a backup", () => {
+  const { parseBackup } = load(FILES, { browser: memoryStorage().browser });
+  const parsed = parseBackup(JSON.stringify({
+    format: "pagemortem-backup", version: 1,
+    settings: { hiddenButtons: ["groupTabs"] },
+    skills: [{ ...caption, pinned: true }],
+  }));
+  assert.deepEqual(plain(parsed.settings), { hiddenButtons: ["groupTabs"] });
+  assert.equal(parsed.skills[0].pinned, true);
+  assert.deepEqual(plain(parseBackup(JSON.stringify({ format: "pagemortem-backup", version: 1, settings: { hiddenButtons: [1] } })).settings), {});
+});

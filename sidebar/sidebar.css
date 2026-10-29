@@ -120,7 +120,10 @@ button:disabled { cursor: default; opacity: .5; }
 .chip { border: 1px solid var(--border); background: var(--panel); border-radius: 999px; padding: 3px 11px; }
 .chip:hover:not(:disabled) { border-color: var(--accent); }
 .chip.ghost { background: transparent; }
+.chip.agent { border-style: dashed; }
+.skill-buttons { display: contents; }
 .split { display: flex; }
+.split[hidden] { display: none; }
 .split .chip { border-radius: 999px 0 0 999px; }
 .split select { border: 1px solid var(--border); border-left: 0; border-radius: 0 999px 999px 0; background: var(--panel); padding: 3px 6px; max-width: 140px; }
 

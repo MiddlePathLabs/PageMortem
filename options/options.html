@@ -119,6 +119,11 @@
         <input id="language" spellcheck="false">
       </label>
       <label class="check"><input id="showStats" type="checkbox"> Show speed and token counts under each reply</label>
+      <fieldset class="capabilities" aria-describedby="quickHint">
+        <legend>Sidebar buttons</legend>
+        <div id="quickButtons" class="quick-buttons"></div>
+        <p class="hint" id="quickHint">Unchecked buttons are hidden from the sidebar. The right-click menu keeps its entries. To add a skill as a button, edit it under Skills.</p>
+      </fieldset>
     </section>
 
     <section aria-labelledby="safetyHeading">
@@ -192,6 +197,8 @@
         </label>
       </div>
       <p class="hint" id="skillKindHint">A screenshot is sent to the vision model when one is set. Raw text is not treated as Markdown, so a caption format stays as typed. Include and Reply apply to prompt skills only.</p>
+      <label class="check"><input id="skillPinned" type="checkbox" aria-describedby="skillPinnedHint"> Show as a button in the sidebar and in the right-click menu</label>
+      <p class="hint" id="skillPinnedHint">At most 4 skills. A click runs the skill on the current page. Text in the message box, or selected text from the right-click menu, becomes its task. An agent skill switches the sidebar to Agent.</p>
       <label>Instructions
         <textarea id="skillBody" class="skill-body" spellcheck="true" placeholder="Output only a Krea 2 caption of the attached image. No preamble."></textarea>
       </label>

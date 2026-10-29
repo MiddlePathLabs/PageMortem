@@ -13,6 +13,7 @@ function read() {
     s[k] = Number.isFinite(v) && $(k).value !== "" ? v : DEFAULTS[k];
   }
   for (const k of BOOL) s[k] = $(k).checked;
+  s.hiddenButtons = QUICK_BUTTONS.filter((b) => !$(`show-${b.id}`).checked).map((b) => b.id);
   Object.assign(s, thinking);
   s.language ||= DEFAULTS.language;
   s.endpoint ||= DEFAULTS.endpoint;
@@ -39,6 +40,17 @@ function fill(s) {
   for (const k of TEXT) $(k).value = s[k] ?? "";
   for (const k of NUM) $(k).value = s[k];
   for (const k of BOOL) $(k).checked = !!s[k];
+  const hidden = new Set(s.hiddenButtons || []);
+  $("quickButtons").replaceChildren(...QUICK_BUTTONS.map((b) => {
+    const label = document.createElement("label");
+    label.className = "check";
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.id = `show-${b.id}`;
+    box.checked = !hidden.has(b.id);
+    label.append(box, ` ${b.label}`);
+    return label;
+  }));
 }
 
 function showLock() {
@@ -255,6 +267,7 @@ function clearSkillForm() {
   $("skillKind").value = "prompt";
   $("skillNeeds").value = "none";
   $("skillOutput").value = "markdown";
+  $("skillPinned").checked = false;
   $("skillBody").value = "";
   draftFiles = [];
   renderDraftFiles();
@@ -269,6 +282,7 @@ function fillSkillForm(skill) {
   $("skillKind").value = skill.kind;
   $("skillNeeds").value = skill.needs;
   $("skillOutput").value = skill.output;
+  $("skillPinned").checked = !!skill.pinned;
   $("skillBody").value = skill.body;
   draftFiles = skill.files ? skill.files.map((file) => ({ ...file })) : [];
   renderDraftFiles();
@@ -289,7 +303,8 @@ function renderSkills() {
     const kind = s.kind === "agent" ? "Agent" : "Prompt";
     const extra = s.kind === "agent" ? "" : ` · ${s.needs === "none" ? "no extra context" : s.needs} · ${s.output}`;
     const count = s.files?.length ? ` · ${s.files.length} file${s.files.length === 1 ? "" : "s"}` : "";
-    meta.textContent = `${kind}${extra}${count}${s.description ? ` — ${s.description}` : ""}`;
+    const button = s.pinned ? " · button" : "";
+    meta.textContent = `${kind}${extra}${count}${button}${s.description ? ` — ${s.description}` : ""}`;
     const row = document.createElement("div");
     row.className = "row";
     const edit = document.createElement("button");
@@ -330,9 +345,14 @@ async function commitSkill() {
     needs: $("skillNeeds").value,
     output: $("skillOutput").value,
     body: $("skillBody").value,
+    pinned: $("skillPinned").checked,
     files: draftFiles,
   });
   if (parsed.error) return skillResult(parsed.error, false);
+  const others = skills.filter((s) => s.pinned && s.name !== editing).length;
+  if (parsed.skill.pinned && others >= SKILL_LIMITS.buttons) {
+    return skillResult(`At most ${SKILL_LIMITS.buttons} skills can be buttons. Turn one off first.`, false);
+  }
   $("skillAdd").disabled = true;
   try {
     skills = await putSkill(parsed.skill, editing);
@@ -390,7 +410,8 @@ function showImported(parsed) {
   if (parsed.error) return skillResult(parsed.error, false);
   const existing = skills.find((s) => s.name === parsed.skill.name);
   editing = existing ? existing.name : null;
-  fillSkillForm(parsed.skill);
+  // A skill file doesn't say whether it is a button, so replacing a saved skill keeps that choice.
+  fillSkillForm({ ...parsed.skill, pinned: !!existing?.pinned });
   const n = parsed.skill.files?.length || 0;
   const skipped = parsed.skipped?.length ? ` Skipped: ${parsed.skipped.join("; ")}.` : "";
   const lead = existing ? `Review @${parsed.skill.name}, then save to replace it.` : "Review the skill, then add it.";

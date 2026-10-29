@@ -557,3 +557,21 @@ test("go_to asks before a same-site address with a query or on another origin", 
     assert.equal(web.tabs.get(1).url, SHOP, url);
   }
 });
+
+test("a right-clicked image stays with the task, described once when the vision model is separate", async () => {
+  const image = { url: "data:image/jpeg;base64,AA", src: `${SHOP}full/1.jpg` };
+  const direct = setup({ sites: { [SHOP]: page("Shop", "Gallery") }, replies: [answer("A prompt.")] });
+  await direct.run("write a prompt", { image });
+  const sent = direct.model.calls[0].messages;
+  assert.match(sent[1].content, /right-clicked an image on this page \(https:\/\/shop\.example\/full\/1\.jpg\)/);
+  assert.equal(sent.at(-1).content[1].image_url.url, image.url);
+
+  const described = setup({
+    sites: { [SHOP]: page("Shop", "Gallery") },
+    settings: { visionModel: "vl" },
+    replies: [{ content: "A red fox in snow." }, answer("A prompt.")],
+  });
+  await described.run("write a prompt", { image });
+  assert.equal(described.model.calls[0].model, "vl");
+  assert.match(described.model.calls[1].messages.at(-1).content, /The vision model describes it:\nA red fox in snow\./);
+});

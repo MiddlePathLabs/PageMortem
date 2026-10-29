@@ -281,3 +281,12 @@ test("a prompt skill passed to the agent is not treated as permission to skip th
   assert.equal(model.calls[0].messages[0].content.includes("TOKEN-SKIP"), false);
   assert.equal(model.calls[0].messages[1].content.includes("saved skill"), false);
 });
+
+test("a skill shown as a button keeps that flag, and at most four are buttons", () => {
+  const { normalizeSkill, pinnedSkills } = skills();
+  assert.equal(normalizeSkill({ ...caption, pinned: true }).skill.pinned, true);
+  assert.equal("pinned" in normalizeSkill({ ...caption, pinned: "yes" }).skill, false);
+  const list = ["a", "b", "c", "d", "e", "f"].map((name, i) => ({ ...caption, name, pinned: i !== 1 }));
+  assert.deepEqual(plain(pinnedSkills(list).map((s) => s.name)), ["a", "c", "d", "e"]);
+  assert.deepEqual(plain(pinnedSkills(undefined)), []);
+});

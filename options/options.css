@@ -35,6 +35,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .intro { color: var(--muted); margin: 0 0 20px; }
 .capabilities { min-width: 0; margin: 16px 0; padding: 12px; border: 1px solid var(--border); border-radius: 6px; }
 .capabilities legend { padding: 0 4px; font-weight: 500; }
+.quick-buttons { display: flex; flex-wrap: wrap; gap: 0 18px; }
 .capabilities .hint { margin: 0 0 12px; }
 .probe { display: grid; grid-template-columns: 120px minmax(0, 1fr); align-items: start; gap: 12px; margin-bottom: 12px; }
 .probe:last-child { margin-bottom: 0; }
