@@ -630,20 +630,31 @@ function addBot({ agent = false, replay = false, raw = false } = {}) {
      * session" button. Either is null when the action must be approved on its own. permissions: optional Firefox
      * permissions to request when the user allows (Firefox only shows its prompt from inside a click handler).
      * permissionsOptional: declining Firefox's prompt still allows the action, only without that permission.
+     * items: [{id, label}] the action covers, shown as a checklist; the answer is then {answer, picked: [ids]}.
      */
-    confirm({ title, detail, actionLabel = "Allow action", fields = [], allowAll = null, remember = null, permissions = null, permissionsOptional = false }) {
+    confirm({ title, detail, actionLabel = "Allow action", fields = [], allowAll = null, remember = null, permissions = null, permissionsOptional = false, items = null }) {
       return new Promise((resolve) => {
         const card = confirmCard({ title, detail, fields });
         const recorded = op("confirm", { title, detail, fields }, null);
         const row = el("div", "row");
+        const boxes = items ? checklist(card, items, (n) => {
+          primary.textContent = `${actionLabel} ${n}`;
+          primary.disabled = n === 0;
+        }) : null;
         const finish = (ans, label) => {
           if (!state.confirms.has(finish)) return;
           state.confirms.delete(finish);
           card.classList.add("answered");
+          let picked = null;
+          if (boxes) {
+            picked = boxes.filter((b) => b.checked).map((b) => items[+b.dataset.i].id);
+            for (const b of boxes) b.disabled = true;
+            if (ans === "yes") label = `${actionLabel} ${picked.length} of ${items.length}: allowed`;
+          }
           card.append(el("div", "dimline", label));
           recorded[2] = label;
           saveSoon();
-          resolve(ans);
+          resolve(boxes ? { answer: ans, picked } : ans);
         };
         const mk = (label, ans, cls, after) => {
           const b = el("button", "btn " + (cls || ""), label);
@@ -659,7 +670,8 @@ function addBot({ agent = false, replay = false, raw = false } = {}) {
           });
           return b;
         };
-        row.append(mk(actionLabel, "yes", "primary", `${actionLabel}: allowed`));
+        const primary = mk(items ? `${actionLabel} ${items.length}` : actionLabel, "yes", "primary", `${actionLabel}: allowed`);
+        row.append(primary);
         if (allowAll) row.append(mk(allowAll, "all", "", `${allowAll}: allowed for the rest of this task`));
         if (remember) row.append(mk(remember, "session", "", `${remember}: allowed until you start a new conversation`));
         row.append(mk("Deny", "no", "", "Denied"));
@@ -719,13 +731,59 @@ function addBot({ agent = false, replay = false, raw = false } = {}) {
 function confirmCard({ title, detail, fields = [] }) {
   const card = el("section", "confirm");
   card.setAttribute("aria-label", title);
-  card.append(el("div", "title", title), el("div", "detail", detail || ""));
+  // Once answered, the card shrinks to its title and outcome; the title then shows or hides the details.
+  const head = el("button", "title", title);
+  head.type = "button";
+  head.addEventListener("click", () => {
+    if (card.classList.contains("answered")) head.setAttribute("aria-expanded", card.classList.toggle("open"));
+  });
+  card.append(head, el("div", "detail", detail || ""));
   if (fields.length) {
     const preview = el("dl", "approval-fields");
     for (const field of fields) preview.append(el("dt", null, field.label), el("dd", null, field.value));
     card.append(preview);
   }
   return card;
+}
+
+/** A ticked-by-default checklist of what an approval covers, with select all. `onCount(n)` follows the ticks. */
+function checklist(card, items, onCount) {
+  const box = el("div", "batch");
+  const all = el("input");
+  all.type = "checkbox";
+  all.checked = true;
+  const allLabel = el("label", "batch-all");
+  const count = el("span", "batch-count");
+  allLabel.append(all, " Select all ", count);
+  const list = el("ul", "batch-list");
+  const boxes = items.map((item, i) => {
+    const b = el("input");
+    b.type = "checkbox";
+    b.checked = true;
+    b.dataset.i = i;
+    const label = el("label");
+    label.append(b, " ", item.label);
+    const li = el("li");
+    li.append(label);
+    list.append(li);
+    return b;
+  });
+  const sync = () => {
+    const n = boxes.filter((b) => b.checked).length;
+    all.checked = n === boxes.length;
+    all.indeterminate = n > 0 && n < boxes.length;
+    count.textContent = `(${n} of ${boxes.length})`;
+    onCount(n);
+  };
+  all.addEventListener("change", () => {
+    for (const b of boxes) b.checked = all.checked;
+    sync();
+  });
+  list.addEventListener("change", sync);
+  box.append(allLabel, list);
+  card.append(box);
+  count.textContent = `(${boxes.length} of ${boxes.length})`;
+  return boxes;
 }
 
 /** Draws a stored reply again; one cut off by the sidebar closing shows how far it got. */

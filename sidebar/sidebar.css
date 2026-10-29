@@ -180,7 +180,17 @@ main { flex: 1; min-height: 0; overflow-y: auto; padding: 12px; display: flex; f
 .shot.big { max-height: none; cursor: zoom-out; }
 
 .confirm { border: 1px solid var(--accent); background: var(--accent-soft); border-radius: var(--radius); padding: 8px 10px; margin: 6px 0 8px; }
-.confirm .title { font-weight: 600; }
+.confirm .title { font: inherit; font-weight: 600; color: inherit; background: none; border: 0; padding: 0; text-align: left; cursor: default; }
+.confirm.answered .title { cursor: pointer; }
+.confirm.answered .title::before { content: "▸ "; color: var(--muted); }
+.confirm.answered.open .title::before { content: "▾ "; }
+.confirm.answered:not(.open) :is(.detail, .approval-fields, .batch) { display: none; }
+.confirm .batch { margin: 0 0 8px; font-size: 12.5px; }
+.confirm .batch label { display: flex; gap: 6px; align-items: baseline; overflow-wrap: anywhere; }
+.confirm .batch-all { font-weight: 600; }
+.confirm .batch-count { color: var(--muted); font-weight: normal; }
+.confirm .batch-list { list-style: none; margin: 4px 0 0; padding: 4px 6px; max-height: 180px; overflow-y: auto; border: 1px solid var(--border); border-radius: 4px; background: var(--panel); }
+.confirm .batch-list li { margin: 2px 0; }
 .confirm .detail { white-space: pre-wrap; font-size: 12.5px; margin: 2px 0 8px; overflow-wrap: anywhere; }
 .confirm .row { display: flex; gap: 6px; flex-wrap: wrap; }
 .steps li.card > .confirm { min-width: 0; margin: 2px 0 4px; font-size: 13px; }
